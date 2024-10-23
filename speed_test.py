@@ -151,6 +151,10 @@ add_time_per_doc = speed_test_add_documents(all_docs)
 print("\nRunning queries...")
 avg_query_time, qps = speed_test_queries(all_queries)
 
+# save index
+save_index_data = {"index_name": INDEX_NAME}
+send_post_request(f"{server_url}/save_index", save_index_data)
+
 # delete index
 delete_index_data = {"index_name": INDEX_NAME}
 send_post_request(f"{server_url}/delete_index", delete_index_data)
