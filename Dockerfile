@@ -1,0 +1,16 @@
+# /---------------------------------------\
+# | Stage 1: Build the application binary |
+# \---------------------------------------/
+
+FROM gcc:14 AS build
+RUN apt-get update && apt-get install -y cmake
+COPY . /app
+WORKDIR /app
+RUN mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make
+
+# /------------------------------\
+# | Stage 2: Build minimal image |
+# \------------------------------/
+FROM busybox
+COPY --from=build /app/build/bin/server /server
+CMD ["./server"]

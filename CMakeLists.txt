@@ -13,10 +13,19 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Optimization flags for release
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffunction-sections -fdata-sections")
 
-# Enable LTO
-set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+# Static linking
+set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ -static -Wl,--gc-sections")
+
+# Enable LTO if supported
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported)
+if(ipo_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+else()
+    message(WARNING "LTO is not supported by the current compiler.")
+endif()
 
 # Define the executable
 add_executable(server src/server.cpp)
@@ -29,12 +38,23 @@ target_include_directories(server PRIVATE
     external/asio/asio/include
 )
 
-# Link pthread for threading support
-target_compile_options(server PRIVATE -pthread)
-
 # Add platform-specific optimizations
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(server PRIVATE -march=native -mtune=native -flto -fvisibility=hidden -funroll-loops -Ofast -DHAVE_CXX0X -openmp -fpic -ftree-vectorize -w -lrt)
+    target_compile_options(server PRIVATE 
+        -pthread
+        -march=native -mtune=native 
+        -flto 
+        -fvisibility=hidden 
+        -funroll-loops 
+        -Ofast 
+        -DHAVE_CXX0X 
+        -fopenmp 
+        -fpic 
+        -ftree-vectorize 
+        -w
+        -ffunction-sections 
+        -fdata-sections
+    )
 endif()
 
 # Link external libraries if needed
