@@ -15,8 +15,10 @@ endif()
 # Optimization flags for release
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffunction-sections -fdata-sections")
 
-# Static linking
-set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ -static -Wl,--gc-sections")
+# Static linking for non-Apple platforms
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ -static -Wl,--gc-sections")
+endif()
 
 # Enable LTO if supported
 include(CheckIPOSupported)
@@ -28,7 +30,7 @@ else()
 endif()
 
 # Define the executable
-add_executable(server src/server.cpp)
+add_executable(server src/server.cpp src/data_store.cpp src/filters.cpp)
 
 # Include directories for external libraries, scoped to the target
 target_include_directories(server PRIVATE 
@@ -48,17 +50,36 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -funroll-loops 
         -Ofast 
         -DHAVE_CXX0X 
-        -fopenmp 
         -fpic 
         -ftree-vectorize 
         -w
         -ffunction-sections 
         -fdata-sections
     )
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        target_compile_options(server PRIVATE 
+            -openmp
+        )
+       
+    else()
+        target_compile_options(server PRIVATE -fopenmp)
+        target_link_libraries(server PRIVATE gomp pthread)
+    endif()
+
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_options(server PRIVATE 
+        /O2 /Ob2 /Oi /Ot /GL /arch:AVX2
+    )
 endif()
 
 # Link external libraries if needed
-target_link_libraries(server PRIVATE pthread)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_link_libraries(server PRIVATE ws2_32 mswsock)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # Link pthread explicitly on macOS
+    target_link_libraries(server PRIVATE pthread)
+endif()
 
 # Optional: Set output directory
 set_target_properties(server PROPERTIES
