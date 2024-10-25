@@ -43,10 +43,6 @@ Logical operators: `AND`, `OR`, `NOT`.
 
 This is more of a personal project to get better as C++ and write some more complicated data structures. The goal was to hit a good balance of performance, feature completeness, and simplicity. With support for arbitrary metadata on documents and the ability to filter these datatypes, I think it's a good start. It's also pretty fast:
 
-PS X:\Documents\Projects\hnswlib_server> python .\speed_test.py
-Generating documents and queries...
-Creating index...
-
 ```python
 DIMENSION = 512  # Dimension of the vectors
 NUM_DOC_BATCHES = 100  # Number of document batches to add
