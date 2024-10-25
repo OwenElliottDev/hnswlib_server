@@ -74,7 +74,7 @@ void read_index_from_disk(const std::string &index_name) {
 
     auto *index = new hnswlib::HierarchicalNSW<float>(
         metric_space,
-        10000,
+        100000,
         M,
         ef_construction,
         42,
@@ -227,7 +227,7 @@ int main() {
         if (current_size + add_req.ids.size() > index->max_elements_) {
             index->resizeIndex(current_size + current_size*INDEX_GROWTH_FACTOR + add_req.ids.size());
         }
-
+        // TODO: Catch when the batch exceeds the growth factor or when other threads are adding documents
         for (int i = 0; i < add_req.ids.size(); i++) {
             std::vector<float> vec_data(add_req.vectors[i].begin(), add_req.vectors[i].end());
             index->addPoint(vec_data.data(), add_req.ids[i], 0);
