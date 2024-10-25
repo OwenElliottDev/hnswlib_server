@@ -30,7 +30,7 @@ else()
 endif()
 
 # Define the executable
-add_executable(server src/server.cpp)
+add_executable(server src/server.cpp src/data_store.cpp src/filters.cpp)
 
 # Include directories for external libraries, scoped to the target
 target_include_directories(server PRIVATE 

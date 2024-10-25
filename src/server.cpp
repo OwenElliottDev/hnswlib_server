@@ -5,18 +5,18 @@
 #include <unordered_map>
 #include <iostream>
 #include <vector>
-#include <iostream>
 #include <string>
 #include <filesystem>
 #include <set>
 #include "data_store.hpp"
 #include "models.hpp"
+#include "filters.hpp"
 
 #define INDEX_GROWTH_FACTOR 0.4
 
 std::unordered_map<std::string, hnswlib::HierarchicalNSW<float>*> indices;
 std::unordered_map<std::string, nlohmann::json> index_settings;
-std::unordered_map<std::string, DataStore> data_stores;
+std::unordered_map<std::string, DataStore*> data_stores;
 
 // Functor to filter results with a set of IDs
 class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
@@ -89,8 +89,7 @@ void read_index_from_disk(const std::string &index_name) {
 
 int main() {
     crow::SimpleApp app;
-
-    // app.loglevel(crow::LogLevel::WARNING);
+    app.loglevel(crow::LogLevel::Warning);
 
     CROW_ROUTE(app, "/health").methods(crow::HTTPMethod::GET)
     ([]() {
@@ -121,7 +120,7 @@ int main() {
 
         indices[index_request.index_name] = index;
         index_settings[index_request.index_name] = data;
-        data_stores[index_request.index_name] = DataStore();
+        data_stores[index_request.index_name] = new DataStore();
 
         return crow::response(200, "Index created");
     });
@@ -137,6 +136,9 @@ int main() {
 
         read_index_from_disk(index_name);
 
+        data_stores[index_name] = new DataStore();
+        data_stores[index_name]->deserialize("indices/" + index_name + ".data");
+
         return crow::response(200, "Index loaded");
     });
 
@@ -150,6 +152,7 @@ int main() {
         }
 
         write_index_to_disk(index_name);
+        data_stores[index_name]->serialize("indices/" + index_name + ".data");
 
         return crow::response(200, "Index saved");
     });
@@ -166,6 +169,7 @@ int main() {
         delete indices[index_name];
         indices.erase(index_name);
         index_settings.erase(index_name);
+        delete data_stores[index_name];
         data_stores.erase(index_name);
 
         return crow::response(200, "Index deleted");
@@ -228,7 +232,7 @@ int main() {
             std::vector<float> vec_data(add_req.vectors[i].begin(), add_req.vectors[i].end());
             index->addPoint(vec_data.data(), add_req.ids[i], 0);
             if (add_req.metadatas.size()) {
-                data_stores[add_req.index_name].set(add_req.ids[i], add_req.metadatas[i]);
+                data_stores[add_req.index_name]->set(add_req.ids[i], add_req.metadatas[i]);
             }
         }
 
@@ -248,7 +252,7 @@ int main() {
 
         for (int id : delete_req.ids) {
             index->markDelete(id);
-            data_stores[delete_req.index_name].remove(id);
+            data_stores[delete_req.index_name]->remove(id);
         }
 
         return crow::response(200, "Documents deleted");
@@ -270,17 +274,12 @@ int main() {
 
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
 
-        // if there are filters, filter the IDs first
-        if (search_req.filters.size() > 0) {
-            std::cout << "Filtering IDs" << std::endl;
-            std::set<int> filtered_ids = data_stores[search_req.index_name].filter(search_req.filters);
-            for (int id : filtered_ids) {
-                std::cout << id << std::endl;
-            }
+        if (search_req.filter.size() > 0) {
+            std::shared_ptr<FilterASTNode> filters = parseFilters(search_req.filter);
+            std::set<int> filtered_ids = data_stores[search_req.index_name]->filter(filters);
             FilterIdsInSet filter(filtered_ids);
             result = index->searchKnn(query_vec.data(), search_req.k, &filter);
         } else {
-            std::cout << "No filters" << std::endl;
             result = index->searchKnn(query_vec.data(), search_req.k);
         }
          
@@ -301,6 +300,10 @@ int main() {
 
         return crow::response(response.dump());
     });
+
+    std::cout << "Server started on port 8685!" << std::endl;
+    std::cout << "Press Ctrl+C to quit" << std::endl;
+    std::cout << "All other stdout is suppressed as an optimisation" << std::endl;
 
     // Start the server
     app.port(8685).multithreaded().run();

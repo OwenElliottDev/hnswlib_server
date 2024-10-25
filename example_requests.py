@@ -36,7 +36,7 @@ def add_documents():
     vectors = [np.random.rand(4).tolist() for _ in range(5)]
     ids = list(range(5))
 
-    metadatas = [{"name": f"doc_{i}"} for i in range(5)]
+    metadatas = [{"name": f"doc_{i}", "integer": i, "float": i*100/3.234} for i in range(5)]
 
     add_docs_data = {"index_name": "test_index", "ids": ids, "vectors": vectors, "metadatas": metadatas}
 
@@ -49,7 +49,7 @@ def add_documents():
 
 
 # 3. Search in the Index
-def search_index(filter_eq=None):
+def search_index(filter_string=None):
     # Generate a random query vector
     np.random.seed(42)
     query_vector = np.random.rand(4).tolist()
@@ -59,10 +59,11 @@ def search_index(filter_eq=None):
         "query_vector": vector_to_json(query_vector),
         "k": 3,  # Find the 3 nearest neighbors
         "ef_search": 200,
+        "filter": ""
     }
 
-    if filter_eq:
-        search_data["filters"] = [{"field": "name", "type": 0, "value": filter_eq}]
+    if filter_string:
+        search_data["filter"] = filter_string
     print(search_data)
     response = requests.post(f"{BASE_URL}/search", json=search_data)
 
@@ -129,10 +130,12 @@ def delete_index_from_disk():
 create_index()
 add_documents()
 search_index()
-search_index("doc_2")
+search_index("name = \"doc_2\"")
+search_index("integer > 2")
 save_index()
 delete_index()
 load_index()
 search_index()
+search_index("name = \"doc_2\"")
 delete_index()
 delete_index_from_disk()

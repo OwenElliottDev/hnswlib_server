@@ -10,17 +10,17 @@
 struct IndexRequest {
     std::string index_name;
     int dimension;
-    std::string index_type = "Approximate";
-    std::string space_type = "IP";
-    int ef_construction = 512;
-    int M = 16;
+    std::string index_type;
+    std::string space_type;
+    int ef_construction;
+    int M;
 };
 
 struct AddDocumentsRequest {
     std::string index_name;
     std::vector<int> ids;
     std::vector<std::vector<float>> vectors;
-    std::vector<std::map<std::string, FieldValue>> metadatas = {};
+    std::vector<std::map<std::string, FieldValue>> metadatas;
 };
 
 struct DeleteDocumentsRequest {
@@ -32,8 +32,8 @@ struct SearchRequest {
     std::string index_name;
     std::vector<float> query_vector;
     int k;
-    int ef_search = 512;
-    std::vector<Filter> filters = {};
+    int ef_search;
+    std::string filter;
 };
 
 // Custom serialization for AddDocumentsRequest
@@ -69,7 +69,7 @@ inline void from_json(const nlohmann::json& j, AddDocumentsRequest& req) {
             FieldValue field_value;
 
             if (json_value.is_number_integer()) {
-                field_value = json_value.get<int>();
+                field_value = json_value.get<long>();
             } else if (json_value.is_number_float()) {
                 field_value = json_value.get<double>();
             } else if (json_value.is_string()) {
@@ -92,7 +92,7 @@ inline void to_json(nlohmann::json& j, const FieldValue& value) {
 inline void from_json(const nlohmann::json& j, FieldValue& value) {
     if (j.is_number_integer()) {
         // Use int64_t to safely capture larger integers
-        value = j.get<int64_t>();
+        value = j.get<long>();
     } else if (j.is_number_float()) {
         value = j.get<double>();
     } else if (j.is_string()) {
@@ -102,39 +102,10 @@ inline void from_json(const nlohmann::json& j, FieldValue& value) {
     }
 }
 
-// JSON Serialization helpers for Filter
-inline void to_json(nlohmann::json& j, const Filter& filter) {
-    // Create the JSON object explicitly
-    j["field"] = filter.field;
-    j["type"] = filter.type;
-
-    // Handle the variant value field explicitly
-    std::visit([&j](const auto& arg) {
-        j["value"] = arg;
-    }, filter.value);
-}
-
-inline void from_json(const nlohmann::json& j, Filter& filter) {
-    // Extract the simple fields
-    j.at("field").get_to(filter.field);
-    j.at("type").get_to(filter.type);
-
-    // Handle the variant value field
-    if (j.at("value").is_number_integer()) {
-        filter.value = j.at("value").get<int>();
-    } else if (j.at("value").is_number_float()) {
-        filter.value = j.at("value").get<double>();
-    } else if (j.at("value").is_string()) {
-        filter.value = j.at("value").get<std::string>();
-    } else {
-        throw std::invalid_argument("Unsupported type for Filter value");
-    }
-}
-
 // JSON Serialization for other structures
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(IndexRequest, index_name, dimension, index_type, space_type, ef_construction, M)
 // NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AddDocumentsRequest, index_name, ids, vectors, metadatas)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, index_name, ids)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, index_name, query_vector, k, ef_search, filters)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, index_name, query_vector, k, ef_search, filter)
 
 #endif // MODELS_HPP
