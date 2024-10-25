@@ -7,9 +7,9 @@
 #include "field_value.hpp"
 
 struct Filter {
-    std::string field;  // Field/column name
-    std::string type;   // Comparison type (e.g., "=", "!=", "<", etc.)
-    FieldValue value;   // The value to compare against
+    std::string field;
+    std::string type; // Comparison type: =, !=, >, <, >=, <=
+    FieldValue value;
 };
 
 enum class NodeType {

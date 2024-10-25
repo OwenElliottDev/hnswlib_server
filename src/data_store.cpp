@@ -4,12 +4,10 @@
 #include <algorithm>
 #include <typeindex>
 
-// VariantComparator implementation
 bool VariantComparator::operator()(const FieldValue& lhs, const FieldValue& rhs) const {
     return lhs < rhs;
 }
 
-// Template methods for comparison
 template<typename T>
 bool DataStore::compare(const T& a, const T& b, const std::string& type) {
     if (type == "=") return a == b;
@@ -21,7 +19,6 @@ bool DataStore::compare(const T& a, const T& b, const std::string& type) {
     throw std::runtime_error("Unsupported comparison type");
 }
 
-// Template methods for filtering by type
 template<typename T>
 std::set<int> DataStore::filterByType(const std::map<FieldValue, std::set<int>, VariantComparator>& fieldData, const std::string& type, const FieldValue& value) {
     std::set<int> result;
@@ -35,7 +32,6 @@ std::set<int> DataStore::filterByType(const std::map<FieldValue, std::set<int>, 
     return result;
 }
 
-// Set a record in the data store
 void DataStore::set(int id, std::map<std::string, FieldValue> record) {
     std::lock_guard<std::mutex> lock(mutex);
     data[id] = std::move(record);
@@ -45,7 +41,6 @@ void DataStore::set(int id, std::map<std::string, FieldValue> record) {
     }
 }
 
-// Get a record from the data store
 std::map<std::string, FieldValue> DataStore::get(int id) {
     return data.at(id);
 }
@@ -194,7 +189,7 @@ void DataStore::serialize(const std::string &filename) {
 }
 
 void DataStore::deserialize(const std::string &filename) {
-    // std::lock_guard<std::mutex> lock(mutex);
+    std::lock_guard<std::mutex> lock(mutex);
 
     std::ifstream inFile(filename, std::ios::binary);
     if (!inFile) {

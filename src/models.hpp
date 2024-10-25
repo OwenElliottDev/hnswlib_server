@@ -91,7 +91,6 @@ inline void to_json(nlohmann::json& j, const FieldValue& value) {
 
 inline void from_json(const nlohmann::json& j, FieldValue& value) {
     if (j.is_number_integer()) {
-        // Use int64_t to safely capture larger integers
         value = j.get<long>();
     } else if (j.is_number_float()) {
         value = j.get<double>();
@@ -102,9 +101,7 @@ inline void from_json(const nlohmann::json& j, FieldValue& value) {
     }
 }
 
-// JSON Serialization for other structures
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(IndexRequest, index_name, dimension, index_type, space_type, ef_construction, M)
-// NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AddDocumentsRequest, index_name, ids, vectors, metadatas)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, index_name, ids)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, index_name, query_vector, k, ef_search, filter)
 
