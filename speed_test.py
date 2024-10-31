@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 INDEX_NAME = "benchmark"
 DIMENSION = 512  # Dimension of the vectors
 NUM_DOC_BATCHES = 100  # Number of document batches to add
-DOC_BATCH_SIZE = 100  # Number of documents to add in each batch
+DOC_BATCH_SIZE = 1000  # Number of documents to add in each batch
 NUM_QUERIES = 10000  # Number of queries to run
 VECTOR_RANGE = (0.0, 1.0)  # Range for random vector values
 K = 100  # Number of nearest neighbors to retrieve

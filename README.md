@@ -46,9 +46,8 @@ This is more of a personal project to get better as C++ and write some more comp
 ```python
 DIMENSION = 512  # Dimension of the vectors
 NUM_DOC_BATCHES = 100  # Number of document batches to add
-DOC_BATCH_SIZE = 100  # Number of documents to add in each batch
+DOC_BATCH_SIZE = 1000  # Number of documents to add in each batch
 NUM_QUERIES = 10000  # Number of queries to run
-VECTOR_RANGE = (0.0, 1.0)  # Range for random vector values
 K = 100  # Number of nearest neighbors to retrieve
 EF_CONSTRUCTION = 512  # HNSW index construction parameter
 EF_SEARCH = 512  # HNSW search parameter
@@ -56,11 +55,12 @@ ADD_DOCS_CLIENTS = 10  # Number of parallel clients for adding documents
 SEARCH_CLIENTS = 20  # Number of parallel clients for querying
 ```
 
+For a total of 1M docs on an M1 Macbook Pro:
 ```
-Average time per document: 0.000358 seconds
-Documents per second: 2796.10
-Average time per query: 0.000830 seconds
-Queries per second (QPS): 1205.44
+Average time per document: 0.001163 seconds
+Documents per second: 859.83
+Average time per query: 0.000378 seconds
+Queries per second (QPS): 2644.72
 ```
 
 ## Building
