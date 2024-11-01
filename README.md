@@ -227,3 +227,14 @@ Deletes the index from disk.
 ### Response
 
 - `200 OK`: Index deleted from disk successfully."[]
+
+
+# Testing
+
+You can run the tests by running:
+
+```bash
+rm -rf build && cmake -B build -S . && cmake --build build
+./build/test_filters
+./build/test_data_store
+```

@@ -27,6 +27,7 @@ std::string FilterASTNode::toString() {
         case NodeType::Not:
             return "NOT " + child->toString();
     }
+    return "Invalid node type";
 }
 
 FieldValue convertType(const std::string& value, const std::string& type) {
@@ -60,11 +61,13 @@ std::vector<std::string> splitWhitespace(const std::string &str) {
         if (std::regex_search(token, match, LPAREN)) {
             tokens.push_back(match[0]);
             token.erase(0, 1);
+            tokens.push_back(token);
         } else if (std::regex_search(token, match, RPAREN)) {
+            tokens.push_back(token.substr(0, token.size() - 1));
             tokens.push_back(match[0]);
-            token.pop_back();
+        } else {
+            tokens.push_back(token);
         }
-        tokens.push_back(token);
     }
     return tokens;
 }
@@ -153,6 +156,7 @@ std::shared_ptr<FilterASTNode> parseExpression(int& index, const std::vector<Tok
         auto right = parseTerm(index, tokens);
         astNode = std::make_shared<FilterASTNode>(op, astNode, right);
     }
+    // index++;
     return astNode;
 }
 

@@ -6,7 +6,7 @@ FROM gcc:14 AS build
 RUN apt-get update && apt-get install -y cmake
 COPY . /app
 WORKDIR /app
-RUN mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make
+RUN mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j $(nproc)
 
 # /------------------------------\
 # | Stage 2: Build minimal image |
