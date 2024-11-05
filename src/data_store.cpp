@@ -20,16 +20,70 @@ bool DataStore::compare(const T& a, const T& b, const std::string& type) {
 }
 
 template<typename T>
-std::set<int> DataStore::filterByType(const std::map<FieldValue, std::set<int>, VariantComparator>& fieldData, const std::string& type, const FieldValue& value) {
-    std::set<int> result;
-    for (const auto& [fieldValue, ids] : fieldData) {
+void DataStore::filterByType(std::set<int>& result, const std::string& field, const std::string& type, const FieldValue& value) {
+    // for (const auto& [fieldValue, ids] : fieldIndex[field]) {
+    //     if (auto castedFieldValue = std::get_if<T>(&fieldValue)) {
+    //         if (compare(*castedFieldValue, std::get<T>(value), type)) {
+    //             result.insert(ids.begin(), ids.end());
+    //         }
+    //     }
+    // }
+    
+    for (const auto& [fieldValue, ids] : fieldIndex[field]) {
         if (auto castedFieldValue = std::get_if<T>(&fieldValue)) {
             if (compare(*castedFieldValue, std::get<T>(value), type)) {
                 result.insert(ids.begin(), ids.end());
             }
         }
     }
-    return result;
+
+    // auto& fieldData = fieldIndex[field];
+
+    // if (fieldData.empty()) return;
+
+    // if (type == "=") {
+    //     auto upper_bound = fieldData.upper_bound(value);
+    //     auto lower_bound = fieldData.lower_bound(value);
+    //     for (auto it = lower_bound; it != upper_bound; ++it) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    // } else if (type == "!=") {
+    //     for (const auto& [fieldValue, ids] : fieldData) {
+    //         if (fieldValue != value) {
+    //             result.insert(ids.begin(), ids.end());
+    //         }
+    //     }
+    // } else if (type == ">") {
+    //     auto lower_bound = fieldData.lower_bound(value);
+    //     for (auto it = lower_bound; it != fieldData.end(); ++it) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    // } else if (type == "<") {
+    //     auto upper_bound = fieldData.upper_bound(value);
+    //     for (auto it = fieldData.begin(); it != upper_bound; ++it) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    // } else if (type == ">=") {
+    //     auto lower_bound = fieldData.lower_bound(value);
+    //     for (auto it = lower_bound; it != fieldData.end(); ++it) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    //     auto it = fieldData.find(value);
+    //     if (it != fieldData.end()) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    // } else if (type == "<=") {
+    //     auto upper_bound = fieldData.upper_bound(value);
+    //     for (auto it = fieldData.begin(); it != upper_bound; ++it) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    //     auto it = fieldData.find(value);
+    //     if (it != fieldData.end()) {
+    //         result.insert(it->second.begin(), it->second.end());
+    //     }
+    // } else {
+    //     throw std::runtime_error("Unsupported comparison type");
+    // }
 }
 
 void DataStore::set(int id, std::map<std::string, FieldValue> record) {
@@ -37,7 +91,7 @@ void DataStore::set(int id, std::map<std::string, FieldValue> record) {
     data[id] = std::move(record);
     ids.insert(id);
     for (const auto& [field, value] : data[id]) {
-        field_index[field][value].insert(id);
+        fieldIndex[field][value].insert(id);
     }
 }
 
@@ -51,7 +105,7 @@ void DataStore::remove(int id) {
     if (data.find(id) == data.end()) return;
     auto record = data[id];
     for (const auto& [field, value] : record) {
-        field_index[field][value].erase(id);
+        fieldIndex[field][value].erase(id);
     }
     data.erase(id);
     ids.erase(id);
@@ -66,17 +120,13 @@ std::set<int> DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
     switch (filters->type) {
         case NodeType::Comparison: {
             auto filter = filters->filter;
-            auto fieldData = field_index[filter.field];
-            if (fieldData.empty()) {
-                return result;
-            }
 
             if (std::holds_alternative<long>(filter.value)) {
-                result = filterByType<long>(fieldData, filter.type, filter.value);
+                filterByType<long>(result, filter.field, filter.type, filter.value);
             } else if (std::holds_alternative<double>(filter.value)) {
-                result = filterByType<double>(fieldData, filter.type, filter.value);
+                filterByType<double>(result, filter.field, filter.type, filter.value);
             } else if (std::holds_alternative<std::string>(filter.value)) {
-                result = filterByType<std::string>(fieldData, filter.type, filter.value);
+                filterByType<std::string>(result, filter.field, filter.type, filter.value);
             }
             break;
         }
@@ -220,7 +270,7 @@ void DataStore::deserialize(const std::string &filename) {
             record[field] = value;
             
             // Update the field index
-            field_index[field][value].insert(id);
+            fieldIndex[field][value].insert(id);
         }
 
         data[id] = record;

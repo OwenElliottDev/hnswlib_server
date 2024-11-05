@@ -23,7 +23,7 @@ def create_index():
     requests.post(f"{BASE_URL}/create_index", json=index_data)
 
 # 2. Add Documents
-def add_documents(num_docs=10000):
+def add_documents(num_docs=1000000):
     vectors = [np.random.rand(4).tolist() for _ in range(num_docs)]
     ids = list(range(num_docs))
     metadatas = [{"name": f"doc_{i}", "integer": i, "float": i * 100 / 3.234} for i in range(num_docs)]
@@ -56,8 +56,9 @@ def run_speed_tests():
         "float < 15000",  # Less than filter
     ]
     for f in filters:
-        time_taken = timeit.timeit(lambda: search_index_with_filter(f), number=100)
-        print(f"Filter '{f}': {time_taken / 100:.4f} seconds per search on average | QPS: {1 / (time_taken / 100):.2f}")
+        n_runs = 10
+        time_taken = timeit.timeit(lambda: search_index_with_filter(f), number=n_runs)
+        print(f"Filter '{f}': {time_taken / n_runs:.4f} seconds per search on average | QPS: {1 / (time_taken / n_runs):.2f}")
 
 # Main Execution
 create_index()

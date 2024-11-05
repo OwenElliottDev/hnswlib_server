@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -23,19 +24,19 @@ struct VariantComparator {
 };
 
 // Alias for field index structure
-using FieldIndex = std::map<std::string, std::map<FieldValue, std::set<int>, VariantComparator>>;
+using FieldIndex = std::unordered_map<std::string, std::map<FieldValue, std::set<int>, VariantComparator>>;
 
 class DataStore {
 private:
     std::mutex mutex;
 
-    FieldIndex field_index;
+    FieldIndex fieldIndex;
 
     template<typename T>
     bool compare(const T& a, const T& b, const std::string& type);
 
     template<typename T>
-    std::set<int> filterByType(const std::map<FieldValue, std::set<int>, VariantComparator>& fieldData, const std::string& type, const FieldValue& value);
+    void filterByType(std::set<int>& result, const std::string& field, const std::string& type, const FieldValue& value);
 
 public:
     KeyValueStore data;

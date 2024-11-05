@@ -63,7 +63,7 @@ TEST_F(DataStoreTest, FilterWithBooleanOp) {
     dataStore.set(9, {{"name", "Ivan"}, {"age", 45L}});
 
     auto ageFilter = makeComparisonFilter("age", ">=", 35L);
-    auto nameFilter = makeComparisonFilter("name", "=", std::string("Grace"));
+    auto nameFilter = makeComparisonFilter("age", "=", "Grace");
 
     auto root = std::make_shared<FilterASTNode>(BooleanOp::And, ageFilter, nameFilter);
 
@@ -92,3 +92,33 @@ TEST_F(DataStoreTest, SerializationAndDeserialization) {
     EXPECT_EQ(std::get<long>(retrieved["age"]), 29L);
 }
 
+TEST_F(DataStoreTest, TestEqualLongFilter) {
+    dataStore.set(12, {{"name", "Liam"}, {"age", 25L}});
+    dataStore.set(13, {{"name", "Mia"}, {"age", 25L}});
+    dataStore.set(14, {{"name", "Noah"}, {"age", 30L}});
+    dataStore.set(15, {{"name", "Olivia"}, {"age", 30L}});
+
+    std::string filterString = "age = 25";
+
+    auto ast = parseFilters(filterString);
+
+    auto result = dataStore.filter(ast);
+
+    std::set<int> expected = {12, 13};
+    EXPECT_EQ(result, expected);
+}
+
+TEST_F(DataStoreTest, TestEqualStringFilter) {
+    dataStore.set(16, {{"name", "Sophia"}, {"age", 25L}});
+    dataStore.set(17, {{"name", "James"}, {"age", 30L}});
+    dataStore.set(18, {{"name", "James"}, {"age", 40L}});
+
+    std::string filterString = "name = \"Sophia\"";
+
+    auto ast = parseFilters(filterString);
+
+    auto result = dataStore.filter(ast);
+
+    std::set<int> expected = {16};
+    EXPECT_EQ(result, expected);
+}

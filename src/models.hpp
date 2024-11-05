@@ -8,37 +8,37 @@
 #include "data_store.hpp"
 
 struct IndexRequest {
-    std::string index_name;
+    std::string indexName;
     int dimension;
-    std::string index_type;
-    std::string space_type;
-    int ef_construction;
+    std::string indexType;
+    std::string spaceType;
+    int efConstruction;
     int M;
 };
 
 struct AddDocumentsRequest {
-    std::string index_name;
+    std::string indexName;
     std::vector<int> ids;
     std::vector<std::vector<float>> vectors;
     std::vector<std::map<std::string, FieldValue>> metadatas;
 };
 
 struct DeleteDocumentsRequest {
-    std::string index_name;
+    std::string indexName;
     std::vector<int> ids;
 };
 
 struct SearchRequest {
-    std::string index_name;
-    std::vector<float> query_vector;
+    std::string indexName;
+    std::vector<float> queryVector;
     int k;
-    int ef_search;
+    int efSearch;
     std::string filter;
 };
 
 // Custom serialization for AddDocumentsRequest
 inline void to_json(nlohmann::json& j, const AddDocumentsRequest& req) {
-    j["index_name"] = req.index_name;
+    j["indexName"] = req.indexName;
     j["ids"] = req.ids;
     j["vectors"] = req.vectors;
 
@@ -57,7 +57,7 @@ inline void to_json(nlohmann::json& j, const AddDocumentsRequest& req) {
 }
 
 inline void from_json(const nlohmann::json& j, AddDocumentsRequest& req) {
-    j.at("index_name").get_to(req.index_name);
+    j.at("indexName").get_to(req.indexName);
     j.at("ids").get_to(req.ids);
     j.at("vectors").get_to(req.vectors);
 
@@ -101,8 +101,8 @@ inline void from_json(const nlohmann::json& j, FieldValue& value) {
     }
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(IndexRequest, index_name, dimension, index_type, space_type, ef_construction, M)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, index_name, ids)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, index_name, query_vector, k, ef_search, filter)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(IndexRequest, indexName, dimension, indexType, spaceType, efConstruction, M)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, indexName, ids)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, indexName, queryVector, k, efSearch, filter)
 
 #endif // MODELS_HPP
