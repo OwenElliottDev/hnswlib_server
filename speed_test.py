@@ -19,6 +19,7 @@ EF_SEARCH = 512  # HNSW search parameter
 ADD_DOCS_CLIENTS = 10  # Number of parallel clients for adding documents
 SEARCH_CLIENTS = 20  # Number of parallel clients for querying
 
+
 # Helper function to send POST requests
 def send_post_request(url, data):
     buffer = BytesIO()
@@ -34,15 +35,18 @@ def send_post_request(url, data):
     body = buffer.getvalue().decode("utf-8")
     return body
 
+
 # URL setup
 server_url = "http://localhost:8685"
 create_index_url = f"{server_url}/create_index"
 add_documents_url = f"{server_url}/add_documents"
 search_url = f"{server_url}/search"
 
+
 # Function to generate random vectors
 def generate_random_vector(dim, range_min, range_max):
     return [random.uniform(range_min, range_max) for _ in range(dim)]
+
 
 # Pre-generate all documents
 def generate_all_documents():
@@ -55,6 +59,7 @@ def generate_all_documents():
         all_docs.append(batch_vectors)
     return all_docs
 
+
 # Pre-generate all queries
 def generate_all_queries():
     queries = [
@@ -63,25 +68,28 @@ def generate_all_queries():
     ]
     return queries
 
+
 # Function to create index
 def create_index():
     create_index_data = {
-        "index_name": INDEX_NAME,
+        "indexName": INDEX_NAME,
         "dimension": DIMENSION,
-        "index_type": "Approximate",
-        "space_type": "IP",
+        "indexType": "Approximate",
+        "spaceType": "IP",
         "M": 16,
-        "ef_construction": EF_CONSTRUCTION,
+        "efConstruction": EF_CONSTRUCTION,
     }
     send_post_request(create_index_url, create_index_data)
 
+
 ADDED_DOCS = 0
+
 
 # Function to add documents
 def add_documents(batch_vectors):
     global ADDED_DOCS
     add_documents_data = {
-        "index_name": INDEX_NAME,
+        "indexName": INDEX_NAME,
         "ids": list(range(ADDED_DOCS, ADDED_DOCS + DOC_BATCH_SIZE)),
         "vectors": batch_vectors,
         "metadatas": [],
@@ -89,16 +97,18 @@ def add_documents(batch_vectors):
     ADDED_DOCS += DOC_BATCH_SIZE
     send_post_request(add_documents_url, add_documents_data)
 
+
 # Function to search the index
 def search_index(query_vector):
     search_data = {
-        "index_name": INDEX_NAME,
-        "query_vector": query_vector,
+        "indexName": INDEX_NAME,
+        "queryVector": query_vector,
         "k": K,
-        "ef_search": EF_SEARCH,
+        "efSearch": EF_SEARCH,
         "filter": "",
     }
     send_post_request(search_url, search_data)
+
 
 # Parallel function for adding documents
 def parallel_add_documents(all_docs):
@@ -113,6 +123,7 @@ def parallel_add_documents(all_docs):
     print(f"Documents per second: {docs_per_sec:.2f}")
     return avg_time_per_doc
 
+
 # Parallel function for querying the index
 def parallel_search_queries(queries):
     start_time = time.time()
@@ -125,6 +136,7 @@ def parallel_search_queries(queries):
     print(f"Average time per query: {avg_time_per_query:.6f} seconds")
     print(f"Queries per second (QPS): {qps:.2f}")
     return avg_time_per_query, qps
+
 
 # Pre-generate all the data
 print("Generating documents and queries...")

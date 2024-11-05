@@ -2,6 +2,7 @@
 #include "data_store.hpp"
 #include <fstream>
 #include <algorithm>
+#include <set>
 #include <typeindex>
 
 bool VariantComparator::operator()(const FieldValue& lhs, const FieldValue& rhs) const {
@@ -9,81 +10,54 @@ bool VariantComparator::operator()(const FieldValue& lhs, const FieldValue& rhs)
 }
 
 template<typename T>
-bool DataStore::compare(const T& a, const T& b, const std::string& type) {
-    if (type == "=") return a == b;
-    if (type == "!=") return a != b;
-    if (type == ">") return a > b;
-    if (type == "<") return a < b;
-    if (type == ">=") return a >= b;
-    if (type == "<=") return a <= b;
-    throw std::runtime_error("Unsupported comparison type");
-}
+void DataStore::filterByType(std::unordered_set<int>& result, const std::string& field, const std::string& type, const FieldValue& value) {
+    auto& fieldData = fieldIndex[field];
 
-template<typename T>
-void DataStore::filterByType(std::set<int>& result, const std::string& field, const std::string& type, const FieldValue& value) {
-    // for (const auto& [fieldValue, ids] : fieldIndex[field]) {
-    //     if (auto castedFieldValue = std::get_if<T>(&fieldValue)) {
-    //         if (compare(*castedFieldValue, std::get<T>(value), type)) {
-    //             result.insert(ids.begin(), ids.end());
-    //         }
-    //     }
-    // }
-    
-    for (const auto& [fieldValue, ids] : fieldIndex[field]) {
-        if (auto castedFieldValue = std::get_if<T>(&fieldValue)) {
-            if (compare(*castedFieldValue, std::get<T>(value), type)) {
+    if (fieldData.empty()) return;
+
+    if (type == "=") {
+        auto upper_bound = fieldData.upper_bound(value);
+        auto lower_bound = fieldData.lower_bound(value);
+        for (auto it = lower_bound; it != upper_bound; ++it) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+    } else if (type == "!=") {
+        for (const auto& [fieldValue, ids] : fieldData) {
+            if (fieldValue != value) {
                 result.insert(ids.begin(), ids.end());
             }
         }
+    } else if (type == ">") {
+        auto lower_bound = fieldData.lower_bound(value);
+        for (auto it = lower_bound; it != fieldData.end(); ++it) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+    } else if (type == "<") {
+        auto upper_bound = fieldData.upper_bound(value);
+        for (auto it = fieldData.begin(); it != upper_bound; ++it) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+    } else if (type == ">=") {
+        auto lower_bound = fieldData.lower_bound(value);
+        for (auto it = lower_bound; it != fieldData.end(); ++it) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+        auto it = fieldData.find(value);
+        if (it != fieldData.end()) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+    } else if (type == "<=") {
+        auto upper_bound = fieldData.upper_bound(value);
+        for (auto it = fieldData.begin(); it != upper_bound; ++it) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+        auto it = fieldData.find(value);
+        if (it != fieldData.end()) {
+            result.insert(it->second.begin(), it->second.end());
+        }
+    } else {
+        throw std::runtime_error("Unsupported comparison type");
     }
-
-    // auto& fieldData = fieldIndex[field];
-
-    // if (fieldData.empty()) return;
-
-    // if (type == "=") {
-    //     auto upper_bound = fieldData.upper_bound(value);
-    //     auto lower_bound = fieldData.lower_bound(value);
-    //     for (auto it = lower_bound; it != upper_bound; ++it) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    // } else if (type == "!=") {
-    //     for (const auto& [fieldValue, ids] : fieldData) {
-    //         if (fieldValue != value) {
-    //             result.insert(ids.begin(), ids.end());
-    //         }
-    //     }
-    // } else if (type == ">") {
-    //     auto lower_bound = fieldData.lower_bound(value);
-    //     for (auto it = lower_bound; it != fieldData.end(); ++it) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    // } else if (type == "<") {
-    //     auto upper_bound = fieldData.upper_bound(value);
-    //     for (auto it = fieldData.begin(); it != upper_bound; ++it) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    // } else if (type == ">=") {
-    //     auto lower_bound = fieldData.lower_bound(value);
-    //     for (auto it = lower_bound; it != fieldData.end(); ++it) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    //     auto it = fieldData.find(value);
-    //     if (it != fieldData.end()) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    // } else if (type == "<=") {
-    //     auto upper_bound = fieldData.upper_bound(value);
-    //     for (auto it = fieldData.begin(); it != upper_bound; ++it) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    //     auto it = fieldData.find(value);
-    //     if (it != fieldData.end()) {
-    //         result.insert(it->second.begin(), it->second.end());
-    //     }
-    // } else {
-    //     throw std::runtime_error("Unsupported comparison type");
-    // }
 }
 
 void DataStore::set(int id, std::map<std::string, FieldValue> record) {
@@ -111,8 +85,8 @@ void DataStore::remove(int id) {
     ids.erase(id);
 }
 
-std::set<int> DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
-    std::set<int> result;
+std::unordered_set<int> DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
+    std::unordered_set<int> result;
     if (filters == nullptr) {
         return result;
     }
@@ -133,10 +107,16 @@ std::set<int> DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
         case NodeType::BooleanOp: {
             auto left = filter(filters->left);
             auto right = filter(filters->right);
+
             if (filters->booleanOp == BooleanOp::And) {
-                std::set_intersection(left.begin(), left.end(), right.begin(), right.end(), std::inserter(result, result.begin()));
+                std::set<int> sorted_left(left.begin(), left.end());
+                std::set<int> sorted_right(right.begin(), right.end());
+                std::set_intersection(sorted_left.begin(), sorted_left.end(),
+                                    sorted_right.begin(), sorted_right.end(),
+                                    std::inserter(result, result.begin()));
             } else {
-                std::set_union(left.begin(), left.end(), right.begin(), right.end(), std::inserter(result, result.begin()));
+                result.insert(left.begin(), left.end());
+                result.insert(right.begin(), right.end());
             }
             break;
         }

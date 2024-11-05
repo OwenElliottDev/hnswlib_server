@@ -53,7 +53,7 @@ TEST_F(DataStoreTest, FilterByComparison) {
     auto filter = makeComparisonFilter("age", "=", 28L);
     auto result = dataStore.filter(filter);
 
-    std::set<int> expected = {4, 6};
+    std::unordered_set<int> expected = {4, 6};
     EXPECT_EQ(result, expected);
 }
 
@@ -63,13 +63,13 @@ TEST_F(DataStoreTest, FilterWithBooleanOp) {
     dataStore.set(9, {{"name", "Ivan"}, {"age", 45L}});
 
     auto ageFilter = makeComparisonFilter("age", ">=", 35L);
-    auto nameFilter = makeComparisonFilter("age", "=", "Grace");
+    auto nameFilter = makeComparisonFilter("name", "=", "Grace");
 
     auto root = std::make_shared<FilterASTNode>(BooleanOp::And, ageFilter, nameFilter);
 
     auto result = dataStore.filter(root);
 
-    std::set<int> expected = {7};
+    std::unordered_set<int> expected = {7};
     EXPECT_EQ(result, expected);
 }
 
@@ -104,7 +104,7 @@ TEST_F(DataStoreTest, TestEqualLongFilter) {
 
     auto result = dataStore.filter(ast);
 
-    std::set<int> expected = {12, 13};
+    std::unordered_set<int> expected = {12, 13};
     EXPECT_EQ(result, expected);
 }
 
@@ -119,6 +119,6 @@ TEST_F(DataStoreTest, TestEqualStringFilter) {
 
     auto result = dataStore.filter(ast);
 
-    std::set<int> expected = {16};
+    std::unordered_set<int> expected = {16};
     EXPECT_EQ(result, expected);
 }

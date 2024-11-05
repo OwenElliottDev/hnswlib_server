@@ -7,11 +7,9 @@
 #include <vector>
 #include <string>
 #include <filesystem>
-#include <chrono>
 #include <iostream>
 #include <mutex>
 #include <shared_mutex>
-#include <set>
 #include <unordered_set>
 #include "data_store.hpp"
 #include "models.hpp"
@@ -260,7 +258,8 @@ int main() {
         {
             std::shared_lock<std::shared_mutex> lock(indexMutex);
             for (int i = 0; i < addReq.ids.size(); i++) {
-                std::vector<float> vec_data(addReq.vectors[i].begin(), addReq.vectors[i].end());
+                // std::vector<float> vec_data(addReq.vectors[i].begin(), addReq.vectors[i].end());
+                std::vector<float>& vec_data = addReq.vectors[i];
                 indices[addReq.indexName]->addPoint(vec_data.data(), addReq.ids[i], 0);
                 if (addReq.metadatas.size()) {
                     dataStores[addReq.indexName]->set(addReq.ids[i], addReq.metadatas[i]);
@@ -301,7 +300,6 @@ int main() {
         }
 
         auto *index = indices[searchReq.indexName];
-        // std::vector<float> query_vec(searchReq.queryVector.begin(), searchReq.queryVector.end());
         std::vector<float>& query_vec = searchReq.queryVector;
         index->setEf(searchReq.efSearch);
 
@@ -309,29 +307,10 @@ int main() {
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
 
         if (searchReq.filter.size() > 0) {
-            // start time for filtering
-            auto start = std::chrono::high_resolution_clock::now();
             std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
-            std::set<int> filtered_ids = dataStores[searchReq.indexName]->filter(filters);
-            std::unordered_set<int> filtered_ids_set(filtered_ids.begin(), filtered_ids.end());
-            // end time for filtering
-            auto end = std::chrono::high_resolution_clock::now();
-
-            std::chrono::duration<double> elapsed_seconds = end-start;
-
-            std::cout << "Filtering took: " << elapsed_seconds.count() << "s" << std::endl;
-
-            FilterIdsInSet filter(filtered_ids_set);
-
-            // start time for search
-            start = std::chrono::high_resolution_clock::now();
+            std::unordered_set<int> filteredIds = dataStores[searchReq.indexName]->filter(filters);
+            FilterIdsInSet filter(filteredIds);
             result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
-            // end time for search
-            end = std::chrono::high_resolution_clock::now();
-
-            elapsed_seconds = end-start;
-
-            std::cout << "Search took: " << elapsed_seconds.count() << "s" << std::endl;
         } else {
             result = index->searchKnn(query_vec.data(), searchReq.k);
         }
