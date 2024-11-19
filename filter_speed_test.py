@@ -31,7 +31,7 @@ def add_documents(num_docs=1_000_000):
     vectors = [np.random.rand(DIMENSION).tolist() for _ in range(num_docs)]
     ids = list(range(num_docs))
     metadatas = [
-        {"name": f"doc_{i}", "integer": i, "float": i * 100 / 3.234}
+        {"name": f"doc_{i}", "integer": i, "float_data": i * 3.14}
         for i in range(num_docs)
     ]
     add_docs_data = {
@@ -68,7 +68,8 @@ def run_speed_tests():
         "",  # No filter
         'name = "doc_50000"',  # Exact match filter
         "integer > 50000",  # Range filter
-        "float < 15000",  # Less than filter
+        "float_data < 50000.32",  # Less than filter
+        "float_data < 1000.32",  # Less than filter with less
     ]
     for f in filters:
         n_runs = 100

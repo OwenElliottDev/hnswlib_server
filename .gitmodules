@@ -1,6 +1,7 @@
 [submodule "external/hnswlib"]
 	path = external/hnswlib
-	url = https://github.com/nmslib/hnswlib.git
+	url = https://github.com/OwenPendrighElliott/hnswlib.git
+	branch = main
 [submodule "external/crow"]
 	path = external/crow
 	url = https://github.com/CrowCpp/Crow.git
@@ -13,3 +14,6 @@
 [submodule "external/googletest"]
 	path = external/googletest
 	url = https://github.com/google/googletest
+[submodule "external/cpp_caches"]
+	path = external/cpp_caches
+	url = https://github.com/OwenPendrighElliott/cpp_caches.git

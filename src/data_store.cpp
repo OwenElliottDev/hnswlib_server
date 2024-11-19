@@ -73,6 +73,61 @@ std::map<std::string, FieldValue> DataStore::get(int id) {
     return data.at(id);
 }
 
+
+std::vector<std::map<std::string, FieldValue>> DataStore::getMany(const std::vector<int>& ids) {
+    std::vector<std::map<std::string, FieldValue>> result;
+    for (int id : ids) {
+        result.push_back(data.at(id));
+    }
+    return result;
+}
+
+bool DataStore::matchesFilter(int id, std::shared_ptr<FilterASTNode> filters) {
+    if (filters == nullptr) {
+        return true;
+    }
+
+    auto record = data[id];
+    switch (filters->type) {
+        case NodeType::Comparison: {
+            auto filter = filters->filter;
+            auto field = filter.field;
+            auto value = filter.value;
+            auto type = filter.type;
+
+            if (record.find(field) == record.end()) {
+                return false;
+            }
+
+            auto recordValue = record[field];
+            if (std::holds_alternative<long>(value)) {
+                return std::get<long>(recordValue) == std::get<long>(value);
+            } else if (std::holds_alternative<double>(value)) {
+                return std::get<double>(recordValue) == std::get<double>(value);
+            } else if (std::holds_alternative<std::string>(value)) {
+                return std::get<std::string>(recordValue) == std::get<std::string>(value);
+            }
+            break;
+        }
+        case NodeType::BooleanOp: {
+            auto left = matchesFilter(id, filters->left);
+            auto right = matchesFilter(id, filters->right);
+
+            if (filters->booleanOp == BooleanOp::And) {
+                return left && right;
+            } else {
+                return left || right;
+            }
+            break;
+        }
+        case NodeType::Not: {
+            return !matchesFilter(id, filters->child);
+        }
+    }
+
+    return false;
+}
+
 void DataStore::remove(int id) {
     std::lock_guard<std::mutex> lock(mutex);
 

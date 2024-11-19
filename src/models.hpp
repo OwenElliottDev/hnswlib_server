@@ -34,6 +34,7 @@ struct SearchRequest {
     int k;
     int efSearch;
     std::string filter;
+    bool returnMetadata;
 };
 
 // Custom serialization for AddDocumentsRequest

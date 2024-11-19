@@ -2,12 +2,11 @@
 #include "hnswlib/hnswlib.h"
 #include "nlohmann/json.hpp"
 #include <fstream>
-#include <unordered_map>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <filesystem>
-#include <iostream>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_set>
@@ -16,7 +15,9 @@
 #include "filters.hpp"
 
 #define DEFAULT_INDEX_SIZE 100000
-#define INDEX_GROWTH_FACTOR 2
+#define DEFAULT_INDEX_RESIZE_HEADROOM 10000
+#define INDEX_GROWTH_FACTOR 2.0
+#define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.05
 
 std::unordered_map<std::string, hnswlib::HierarchicalNSW<float>*> indices;
 std::unordered_map<std::string, nlohmann::json> indexSettings;
@@ -244,29 +245,28 @@ int main() {
             return crow::response(404, "Index not found");
         }
 
-        {
-            std::unique_lock<std::shared_mutex> lock(indexMutex);
-            auto *index = indices[addReq.indexName];
+        auto* index = indices[addReq.indexName];
 
-            int current_size = index->cur_element_count;
-                
-            if (current_size + addReq.ids.size() > index->max_elements_) {
-                index->resizeIndex(current_size + current_size*INDEX_GROWTH_FACTOR + addReq.ids.size());
+        
+        if (index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
+    
+            std::unique_lock<std::shared_mutex> uniqueLock(indexMutex);
+
+            if (index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
+                index->resizeIndex((int)((float)index->max_elements_ + (float)index->max_elements_ * INDEX_GROWTH_FACTOR + (float)addReq.ids.size()));
             }
         }
         
         {
             std::shared_lock<std::shared_mutex> lock(indexMutex);
             for (int i = 0; i < addReq.ids.size(); i++) {
-                // std::vector<float> vec_data(addReq.vectors[i].begin(), addReq.vectors[i].end());
                 std::vector<float>& vec_data = addReq.vectors[i];
                 indices[addReq.indexName]->addPoint(vec_data.data(), addReq.ids[i], 0);
                 if (addReq.metadatas.size()) {
                     dataStores[addReq.indexName]->set(addReq.ids[i], addReq.metadatas[i]);
                 }
             }
-        }
-        
+        }        
 
         return crow::response(200, "Documents added");
     });
@@ -310,6 +310,14 @@ int main() {
             std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
             std::unordered_set<int> filteredIds = dataStores[searchReq.indexName]->filter(filters);
             FilterIdsInSet filter(filteredIds);
+
+            if (filteredIds.size() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
+                std::cout << "Using exact search" << std::endl;
+                result = index->searchExactKnn(query_vec.data(), searchReq.k, &filter);
+            } else {
+                std::cout << "Using approximate search" << std::endl;
+                result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
+            }
             result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
         } else {
             result = index->searchKnn(query_vec.data(), searchReq.k);
@@ -327,8 +335,23 @@ int main() {
         std::reverse(ids.begin(), ids.end());
         std::reverse(distances.begin(), distances.end());
 
+
         response["hits"] = ids;
         response["distances"] = distances;
+
+        if (searchReq.returnMetadata) {
+            auto metadatas = dataStores[searchReq.indexName]->getMany(ids);
+            response["metadatas"] = nlohmann::json::array();
+            for (const auto& metadata : metadatas) {
+                nlohmann::json json_metadata;
+                for (const auto& [key, value] : metadata) {
+                    std::visit([&json_metadata, &key](auto&& arg) {
+                        json_metadata[key] = arg;
+                    }, value);
+                }
+                response["metadatas"].push_back(json_metadata);
+            }
+        }
 
         return crow::response(response.dump());
     });

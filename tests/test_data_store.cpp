@@ -122,3 +122,21 @@ TEST_F(DataStoreTest, TestEqualStringFilter) {
     std::unordered_set<int> expected = {16};
     EXPECT_EQ(result, expected);
 }
+
+TEST_F(DataStoreTest, TestFilterFloatRange) {
+    dataStore.set(19, {{"name", "Ava"}, {"age", 25.5}});
+    dataStore.set(20, {{"name", "Logan"}, {"age", 30.5}});
+    dataStore.set(21, {{"name", "Logan"}, {"age", 40.5}});
+
+    std::string filterString = "age >= 30.0";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+    std::unordered_set<int> expected = {20, 21};
+    EXPECT_EQ(result, expected);
+
+    filterString = "age < 30.0";
+    ast = parseFilters(filterString);
+    result = dataStore.filter(ast);
+    expected = {19};
+    EXPECT_EQ(result, expected);
+}

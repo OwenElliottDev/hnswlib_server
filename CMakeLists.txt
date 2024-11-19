@@ -105,9 +105,35 @@ target_include_directories(test_data_store PRIVATE
     src
 )
 
+# Test for test_datastore_stress.cpp
+add_executable(test_datastore_stress tests/test_datastore_stress.cpp src/data_store.cpp src/filters.cpp) # Include filters.cpp here
+target_link_libraries(test_datastore_stress PRIVATE gtest gtest_main pthread)
+target_include_directories(test_datastore_stress PRIVATE 
+    external/crow/include
+    external/hnswlib
+    external/json/single_include
+    external/asio/asio/include
+    src
+)
+
 # Enable testing
 enable_testing()
 add_test(NAME FiltersTest COMMAND test_filters)
 add_test(NAME DataStoreTest COMMAND test_data_store)
+add_test(NAME DataStoreStressTest COMMAND test_datastore_stress)
+
+
+option(ENABLE_PROFILING "Enable profiling with gperftools" OFF)
+
+if(ENABLE_PROFILING)
+    find_library(PROFILER_LIB profiler)
+    if(PROFILER_LIB)
+        target_link_libraries(test_datastore_stress PRIVATE ${PROFILER_LIB})
+        message(STATUS "Profiling enabled for test_datastore_stress with gperftools")
+    else()
+        message(WARNING "gperftools not found. Profiling disabled.")
+    endif()
+endif()
+
 
 set(CMAKE_VERBOSE_MAKEFILE ON)

@@ -12,7 +12,7 @@ This server supports arbitrary metadata in documents on top of HNSWLib, these ca
     
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "ids": [0, 1, 2, 3, 4],
     "vectors": [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7], [0.8, 0.9, 0.1, 0.2]],
     "metadatas": [{"name": "doc_0"}, {"some_number": 2}, {"some_float": 0.4234}, {"name": "doc_3", "category": "cool"}, {"name": "doc_4", "category": "cool"}]
@@ -23,7 +23,7 @@ You can then filter by metadata like so:
 
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "query_vector": [0.1, 0.2, 0.3, 0.4],
     "k": 5,
     "ef_search": 200,
@@ -112,11 +112,11 @@ Creates a new index with the given parameters. Valid `space_type` values are `L2
 
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "dimension": 4,
-    "index_type": "Approximate",
-    "space_type": "IP",
-    "ef_construction": 200,
+    "indexType": "Approximate",
+    "spaceType": "IP",
+    "efConstruction": 200,
     "M": 16
 }
 ```
@@ -133,7 +133,7 @@ Adds documents to the index.
 
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "ids": [0, 1, 2, 3, 4],
     "vectors": [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7], [0.8, 0.9, 0.1, 0.2]],
     "metadatas": [{"name": "doc_0"}, {"name": "doc_1"}, {"name": "doc_2"}, {"name": "doc_3"}, {"name": "doc_4"}]
@@ -152,10 +152,10 @@ Searches for the nearest neighbors of a query vector in the index.
 
 ```json
 {
-    "index_name": "test_index",
-    "query_vector": [0.1, 0.2, 0.3, 0.4],
+    "indexName": "test_index",
+    "queryVector": [0.1, 0.2, 0.3, 0.4],
     "k": 5,
-    "ef_search": 200,
+    "efSearch": 200,
     "filter": ""
 }
 ```
@@ -172,7 +172,7 @@ Saves the index to disk.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -188,7 +188,7 @@ Deletes the index from memory.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -204,7 +204,7 @@ Loads the index from disk.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -220,7 +220,7 @@ Deletes the index from disk.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -234,7 +234,7 @@ Deletes the index from disk.
 You can run the tests by running:
 
 ```bash
-rm -rf build && cmake -B build -S . && cmake --build build
+rm -rf build && cmake -B build -S . && cmake --build build -j 8
 ./build/test_filters
 ./build/test_data_store
 ```
