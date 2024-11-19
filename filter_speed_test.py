@@ -54,6 +54,7 @@ def search_index_with_filter(filter_string):
         "k": 3,
         "efSearch": 200,
         "filter": filter_string,
+        "returnMetadata": True,
     }
     response = requests.post(f"{BASE_URL}/search", json=search_data)
     if response.status_code == 200:

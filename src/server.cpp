@@ -13,15 +13,19 @@
 #include "data_store.hpp"
 #include "models.hpp"
 #include "filters.hpp"
+#include "lfu_cache.hpp"
 
 #define DEFAULT_INDEX_SIZE 100000
 #define DEFAULT_INDEX_RESIZE_HEADROOM 10000
 #define INDEX_GROWTH_FACTOR 2.0
-#define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.05
+#define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
+#define MAX_FILTER_CACHE_SIZE 1000
 
 std::unordered_map<std::string, hnswlib::HierarchicalNSW<float>*> indices;
 std::unordered_map<std::string, nlohmann::json> indexSettings;
 std::unordered_map<std::string, DataStore*> dataStores;
+
+std::unordered_map<std::string, LFUCache<std::string, std::unordered_set<int>>*> indexFilterCache;
 
 std::shared_mutex indexMutex;
 std::mutex dataStoreMutex;
@@ -134,6 +138,7 @@ int main() {
             indices[indexRequest.indexName] = index;
             indexSettings[indexRequest.indexName] = data;
             dataStores[indexRequest.indexName] = new DataStore();
+            indexFilterCache[indexRequest.indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
         }
         return crow::response(200, "Index created");
     });
@@ -154,6 +159,7 @@ int main() {
 
             dataStores[indexName] = new DataStore();
             dataStores[indexName]->deserialize("indices/" + indexName + ".data");
+            indexFilterCache[indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
         }
 
         return crow::response(200, "Index loaded");
@@ -196,6 +202,8 @@ int main() {
             indexSettings.erase(indexName);
             delete dataStores[indexName];
             dataStores.erase(indexName);
+            delete indexFilterCache[indexName];
+            indexFilterCache.erase(indexName);
         }
         return crow::response(200, "Index deleted");
     });
@@ -210,7 +218,7 @@ int main() {
             std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
             
             if (indices.find(indexName) != indices.end()) {
-                return crow::response(400, "Index is loaded. Please unload it first");
+                return crow::response(400, "Index is loaded. Please delete it first");
             }
 
             remove_index_from_disk(indexName);
@@ -256,6 +264,10 @@ int main() {
                 index->resizeIndex((int)((float)index->max_elements_ + (float)index->max_elements_ * INDEX_GROWTH_FACTOR + (float)addReq.ids.size()));
             }
         }
+
+        if (indexFilterCache[addReq.indexName]->getStats()["size"] > 0) {
+            indexFilterCache[addReq.indexName]->clear();
+        }
         
         {
             std::shared_lock<std::shared_mutex> lock(indexMutex);
@@ -290,6 +302,35 @@ int main() {
         return crow::response(200, "Documents deleted");
     });
 
+    CROW_ROUTE(app, "/get_document/<string>/<int>").methods(crow::HTTPMethod::GET)
+    ([](const crow::request &req, std::string indexName, int id) {
+        if (indices.find(indexName) == indices.end()) {
+            return crow::response(404, "Index not found");
+        }
+
+        auto *index = indices[indexName];
+        auto hasDoc = dataStores[indexName]->contains(id);
+
+        if (!hasDoc) {
+            return crow::response(404, "Document not found");
+        }
+
+        auto metadata = dataStores[indexName]->get(id);
+        auto vectorData = index->getDataByLabel<float>(id);
+        nlohmann::json response;
+        
+        response["id"] = id;
+        response["vector"] = vectorData;
+        response["metadata"] = nlohmann::json();
+        for (const auto& [key, value] : metadata) {
+            std::visit([&response, &key](auto&& arg) {
+                response["metadata"][key] = arg;
+            }, value);
+        }
+
+        return crow::response(response.dump());
+    });
+
     CROW_ROUTE(app, "/search").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
@@ -308,17 +349,22 @@ int main() {
 
         if (searchReq.filter.size() > 0) {
             std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
-            std::unordered_set<int> filteredIds = dataStores[searchReq.indexName]->filter(filters);
+            std::unordered_set<int> filteredIds;
+            auto &filterCache = indexFilterCache[searchReq.indexName];
+            if (filterCache->get(searchReq.filter) != nullptr) {
+                filteredIds = *filterCache->get(searchReq.filter);
+            } else {
+                filteredIds = dataStores[searchReq.indexName]->filter(filters);
+                filterCache->put(searchReq.filter, filteredIds);
+            }
+            
             FilterIdsInSet filter(filteredIds);
 
             if (filteredIds.size() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
-                std::cout << "Using exact search" << std::endl;
                 result = index->searchExactKnn(query_vec.data(), searchReq.k, &filter);
             } else {
-                std::cout << "Using approximate search" << std::endl;
                 result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
             }
-            result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
         } else {
             result = index->searchKnn(query_vec.data(), searchReq.k);
         }

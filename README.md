@@ -44,23 +44,26 @@ Logical operators: `AND`, `OR`, `NOT`.
 This is more of a personal project to get better as C++ and write some more complicated data structures. The goal was to hit a good balance of performance, feature completeness, and simplicity. With support for arbitrary metadata on documents and the ability to filter these datatypes, I think it's a good start. It's also pretty fast:
 
 ```python
-DIMENSION = 512  # Dimension of the vectors
-NUM_DOC_BATCHES = 100  # Number of document batches to add
-DOC_BATCH_SIZE = 1000  # Number of documents to add in each batch
-NUM_QUERIES = 10000  # Number of queries to run
-K = 100  # Number of nearest neighbors to retrieve
-EF_CONSTRUCTION = 512  # HNSW index construction parameter
-EF_SEARCH = 512  # HNSW search parameter
-ADD_DOCS_CLIENTS = 10  # Number of parallel clients for adding documents
-SEARCH_CLIENTS = 20  # Number of parallel clients for querying
+INDEX_NAME = "benchmark"
+DIMENSION = 512
+NUM_DOC_BATCHES = 1000
+DOC_BATCH_SIZE = 100
+NUM_QUERIES = 10000
+VECTOR_RANGE = (-1.0, 1.0)
+K = 100
+M = 16
+EF_CONSTRUCTION = 512
+EF_SEARCH = 512
+ADD_DOCS_CLIENTS = 20
+SEARCH_CLIENTS = 20
 ```
 
-For a total of 1M docs on an M1 Macbook Pro:
+For a total of 100k docs on an M1 Macbook Pro:
 ```
-Average time per document: 0.001163 seconds
-Documents per second: 859.83
-Average time per query: 0.000378 seconds
-Queries per second (QPS): 2644.72
+Average time per document: 0.000548 seconds
+Average documents per second: 1825.57
+Average time per query: 0.000865 seconds
+Average queries per second: 1156.02
 ```
 
 ## Building

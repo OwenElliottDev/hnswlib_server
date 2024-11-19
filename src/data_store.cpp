@@ -73,6 +73,10 @@ std::map<std::string, FieldValue> DataStore::get(int id) {
     return data.at(id);
 }
 
+bool DataStore::contains(int id) {
+    return data.find(id) != data.end();
+}
+
 
 std::vector<std::map<std::string, FieldValue>> DataStore::getMany(const std::vector<int>& ids) {
     std::vector<std::map<std::string, FieldValue>> result;

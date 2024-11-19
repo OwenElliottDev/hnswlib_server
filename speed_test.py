@@ -125,6 +125,7 @@ def search_index(query_vector):
         "k": K,
         "efSearch": EF_SEARCH,
         "filter": "",
+        "returnMetadata": False,
     }
     send_post_request(search_url, search_data)
 

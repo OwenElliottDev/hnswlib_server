@@ -42,6 +42,7 @@ public:
     void set(int id, std::map<std::string, FieldValue> record);
     std::map<std::string, FieldValue> get(int id);
     std::vector<std::map<std::string, FieldValue>> getMany(const std::vector<int>& ids);
+    bool contains(int id);
     bool matchesFilter(int id, std::shared_ptr<FilterASTNode> filters);
     void remove(int id);
     std::unordered_set<int> filter(std::shared_ptr<FilterASTNode> filters);

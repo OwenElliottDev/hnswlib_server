@@ -34,6 +34,7 @@ target_include_directories(server PRIVATE
     external/hnswlib
     external/json/single_include
     external/asio/asio/include
+    external/cpp_caches/src
 )
 
 # platform-specific optimizations
