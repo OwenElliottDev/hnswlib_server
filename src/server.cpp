@@ -2,96 +2,102 @@
 #include "hnswlib/hnswlib.h"
 #include "nlohmann/json.hpp"
 #include <fstream>
-#include <unordered_map>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <filesystem>
 #include <mutex>
 #include <shared_mutex>
-#include <set>
+#include <unordered_set>
 #include "data_store.hpp"
 #include "models.hpp"
 #include "filters.hpp"
+#include "lfu_cache.hpp"
 
 #define DEFAULT_INDEX_SIZE 100000
-#define INDEX_GROWTH_FACTOR 2
+#define DEFAULT_INDEX_RESIZE_HEADROOM 10000
+#define INDEX_GROWTH_FACTOR 2.0
+#define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
+#define MAX_FILTER_CACHE_SIZE 1000
 
 std::unordered_map<std::string, hnswlib::HierarchicalNSW<float>*> indices;
-std::unordered_map<std::string, nlohmann::json> index_settings;
-std::unordered_map<std::string, DataStore*> data_stores;
+std::unordered_map<std::string, nlohmann::json> indexSettings;
+std::unordered_map<std::string, DataStore*> dataStores;
 
-std::shared_mutex index_mutex;
-std::mutex data_store_mutex;
+std::unordered_map<std::string, LFUCache<std::string, std::unordered_set<int>>*> indexFilterCache;
+
+std::shared_mutex indexMutex;
+std::mutex dataStoreMutex;
 
 // Functor to filter results with a set of IDs
 class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
     public:
-    std::set<int>& ids;
-    FilterIdsInSet(std::set<int>& ids) : ids(ids) {}
+    std::unordered_set<int>& ids;
+    FilterIdsInSet(std::unordered_set<int>& ids) : ids(ids) {}
     bool operator()(hnswlib::labeltype label_id) {
         return ids.find(label_id) != ids.end();
     }
 };
 
-void remove_index_from_disk(const std::string &index_name) {
-    std::filesystem::remove("indices/" + index_name + ".bin");
-    std::filesystem::remove("indices/" + index_name + ".json");
-    std::filesystem::remove("indices/" + index_name + ".data");
+void remove_index_from_disk(const std::string &indexName) {
+    std::filesystem::remove("indices/" + indexName + ".bin");
+    std::filesystem::remove("indices/" + indexName + ".json");
+    std::filesystem::remove("indices/" + indexName + ".data");
 }
 
 
-void write_index_to_disk(const std::string &index_name) {
+void write_index_to_disk(const std::string &indexName) {
     std::filesystem::create_directories("indices");
 
-    auto *index = indices[index_name];
+    auto *index = indices[indexName];
     if (!index) {
-        std::cerr << "Error: Index not found: " << index_name << std::endl;
+        std::cerr << "Error: Index not found: " << indexName << std::endl;
         return;
     }
 
     try {
-        index->saveIndex("indices/" + index_name + ".bin");
+        index->saveIndex("indices/" + indexName + ".bin");
     } catch (const std::exception &e) {
         std::cerr << "Error saving index: " << e.what() << std::endl;
         return;
     }
 
-    std::ofstream settings_file("indices/" + index_name + ".json");
+    std::ofstream settings_file("indices/" + indexName + ".json");
     if (!settings_file) {
-        std::cerr << "Error: Unable to open settings file for writing: " << index_name << std::endl;
+        std::cerr << "Error: Unable to open settings file for writing: " << indexName << std::endl;
         return;
     }
-    settings_file << index_settings[index_name].dump();
+    settings_file << indexSettings[indexName].dump();
 }
 
-void read_index_from_disk(const std::string &index_name) {
-    std::ifstream settings_file("indices/" + index_name + ".json");
-    nlohmann::json index_state;
-    settings_file >> index_state;
+void read_index_from_disk(const std::string &indexName) {
+    std::ifstream settings_file("indices/" + indexName + ".json");
+    nlohmann::json indexState;
+    settings_file >> indexState;
 
-    int dim = index_state["dimension"];
-    std::string space = index_state["space_type"];
-    int ef_construction = index_state["ef_construction"];
-    int M = index_state["M"];
+    int dim = indexState["dimension"];
+    std::string space = indexState["spaceType"];
+    int ef_construction = indexState["efConstruction"];
+    int M = indexState["M"];
 
-    hnswlib::SpaceInterface<float>* metric_space = (space == "IP")
+    hnswlib::SpaceInterface<float>* metricSpace = (space == "IP")
         ? static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::InnerProductSpace(dim))
         : static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::L2Space(dim));
 
     auto *index = new hnswlib::HierarchicalNSW<float>(
-        metric_space,
+        metricSpace,
         DEFAULT_INDEX_SIZE,
         M,
         ef_construction,
         42,
         true
     );
-    std::string index_path = "indices/" + index_name + ".bin";
-    index->loadIndex(index_path, metric_space, 10000);
+    std::string index_path = "indices/" + indexName + ".bin";
+    index->loadIndex(index_path, metricSpace, 10000);
 
-    indices[index_name] = index;
-    index_settings[index_name] = index_state;
+    indices[indexName] = index;
+    indexSettings[indexName] = indexState;
 }
 
 int main() {
@@ -106,32 +112,33 @@ int main() {
     CROW_ROUTE(app, "/create_index").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        IndexRequest index_request = data.get<IndexRequest>();
+        IndexRequest indexRequest = data.get<IndexRequest>();
 
         {
-            std::unique_lock<std::shared_mutex> index_lock(index_mutex);
-            std::lock_guard<std::mutex> datastore_lock(data_store_mutex);
+            std::unique_lock<std::shared_mutex> indexLock(indexMutex);
+            std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
 
-            if (indices.find(index_request.index_name) != indices.end()) {
+            if (indices.find(indexRequest.indexName) != indices.end()) {
                 return crow::response(400, "Index already exists");
             }
 
-            hnswlib::SpaceInterface<float>* space = (index_request.space_type == "IP")
-                ? static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::InnerProductSpace(index_request.dimension))
-                : static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::L2Space(index_request.dimension));
+            hnswlib::SpaceInterface<float>* space = (indexRequest.spaceType == "IP")
+                ? static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::InnerProductSpace(indexRequest.dimension))
+                : static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::L2Space(indexRequest.dimension));
 
             auto *index = new hnswlib::HierarchicalNSW<float>(
                 space,
                 DEFAULT_INDEX_SIZE,
-                index_request.M,
-                index_request.ef_construction,
+                indexRequest.M,
+                indexRequest.efConstruction,
                 42,
                 true
             );
 
-            indices[index_request.index_name] = index;
-            index_settings[index_request.index_name] = data;
-            data_stores[index_request.index_name] = new DataStore();
+            indices[indexRequest.indexName] = index;
+            indexSettings[indexRequest.indexName] = data;
+            dataStores[indexRequest.indexName] = new DataStore();
+            indexFilterCache[indexRequest.indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
         }
         return crow::response(200, "Index created");
     });
@@ -139,19 +146,20 @@ int main() {
     CROW_ROUTE(app, "/load_index").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        std::string index_name = data["index_name"];
+        std::string indexName = data["indexName"];
         {
-            std::unique_lock<std::shared_mutex> index_lock(index_mutex);
-            std::lock_guard<std::mutex> datastore_lock(data_store_mutex);
+            std::unique_lock<std::shared_mutex> indexLock(indexMutex);
+            std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
         
-            if (indices.find(index_name) != indices.end()) {
+            if (indices.find(indexName) != indices.end()) {
                 return crow::response(400, "Index already exists");
             }
 
-            read_index_from_disk(index_name);
+            read_index_from_disk(indexName);
 
-            data_stores[index_name] = new DataStore();
-            data_stores[index_name]->deserialize("indices/" + index_name + ".data");
+            dataStores[indexName] = new DataStore();
+            dataStores[indexName]->deserialize("indices/" + indexName + ".data");
+            indexFilterCache[indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
         }
 
         return crow::response(200, "Index loaded");
@@ -160,18 +168,18 @@ int main() {
     CROW_ROUTE(app, "/save_index").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        std::string index_name = data["index_name"];
+        std::string indexName = data["indexName"];
 
         {
-            std::unique_lock<std::shared_mutex> index_lock(index_mutex);
-            std::lock_guard<std::mutex> datastore_lock(data_store_mutex);
+            std::unique_lock<std::shared_mutex> indexLock(indexMutex);
+            std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
             
-            if (indices.find(index_name) == indices.end()) {
+            if (indices.find(indexName) == indices.end()) {
                 return crow::response(404, "Index not found");
             }
 
-            write_index_to_disk(index_name);
-            data_stores[index_name]->serialize("indices/" + index_name + ".data");
+            write_index_to_disk(indexName);
+            dataStores[indexName]->serialize("indices/" + indexName + ".data");
         }
         return crow::response(200, "Index saved");
     });
@@ -179,21 +187,23 @@ int main() {
     CROW_ROUTE(app, "/delete_index").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        std::string index_name = data["index_name"];
+        std::string indexName = data["indexName"];
 
         {
-            std::unique_lock<std::shared_mutex> index_lock(index_mutex);
-            std::lock_guard<std::mutex> datastore_lock(data_store_mutex);
+            std::unique_lock<std::shared_mutex> indexLock(indexMutex);
+            std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
             
-            if (indices.find(index_name) == indices.end()) {
+            if (indices.find(indexName) == indices.end()) {
                 return crow::response(404, "Index not found");
             }
 
-            delete indices[index_name];
-            indices.erase(index_name);
-            index_settings.erase(index_name);
-            delete data_stores[index_name];
-            data_stores.erase(index_name);
+            delete indices[indexName];
+            indices.erase(indexName);
+            indexSettings.erase(indexName);
+            delete dataStores[indexName];
+            dataStores.erase(indexName);
+            delete indexFilterCache[indexName];
+            indexFilterCache.erase(indexName);
         }
         return crow::response(200, "Index deleted");
     });
@@ -201,17 +211,17 @@ int main() {
     CROW_ROUTE(app, "/delete_index_from_disk").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        std::string index_name = data["index_name"];
+        std::string indexName = data["indexName"];
 
         {
-            std::unique_lock<std::shared_mutex> index_lock(index_mutex);
-            std::lock_guard<std::mutex> datastore_lock(data_store_mutex);
+            std::unique_lock<std::shared_mutex> indexLock(indexMutex);
+            std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
             
-            if (indices.find(index_name) != indices.end()) {
-                return crow::response(400, "Index is loaded. Please unload it first");
+            if (indices.find(indexName) != indices.end()) {
+                return crow::response(400, "Index is loaded. Please delete it first");
             }
 
-            remove_index_from_disk(index_name);
+            remove_index_from_disk(indexName);
         }
         return crow::response(200, "Index deleted from disk");
     });
@@ -219,8 +229,8 @@ int main() {
     CROW_ROUTE(app, "/list_indices").methods(crow::HTTPMethod::GET)
     ([]() {
         nlohmann::json response;
-        for (auto const& [index_name, _] : indices) {
-            response.push_back(index_name);
+        for (auto const& [indexName, _] : indices) {
+            response.push_back(indexName);
         }
 
         return crow::response(response.dump());
@@ -229,42 +239,46 @@ int main() {
     CROW_ROUTE(app, "/add_documents").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        AddDocumentsRequest add_req = data.get<AddDocumentsRequest>();
+        AddDocumentsRequest addReq = data.get<AddDocumentsRequest>();
 
-        if (add_req.ids.size() != add_req.vectors.size()) {
+        if (addReq.ids.size() != addReq.vectors.size()) {
             return crow::response(400, "Number of IDs does not match number of vectors");
         }
 
-        if (add_req.metadatas.size() > 0 && add_req.metadatas.size() != add_req.ids.size()) {
+        if (addReq.metadatas.size() > 0 && addReq.metadatas.size() != addReq.ids.size()) {
             return crow::response(400, "Number of metadatas does not match number of IDs");
         }
 
-        if (indices.find(add_req.index_name) == indices.end()) {
+        if (indices.find(addReq.indexName) == indices.end()) {
             return crow::response(404, "Index not found");
         }
 
-        {
-            std::unique_lock<std::shared_mutex> lock(index_mutex);
-            auto *index = indices[add_req.index_name];
+        auto* index = indices[addReq.indexName];
 
-            int current_size = index->cur_element_count;
-                
-            if (current_size + add_req.ids.size() > index->max_elements_) {
-                index->resizeIndex(current_size + current_size*INDEX_GROWTH_FACTOR + add_req.ids.size());
+        
+        if (index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
+    
+            std::unique_lock<std::shared_mutex> uniqueLock(indexMutex);
+
+            if (index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
+                index->resizeIndex((int)((float)index->max_elements_ + (float)index->max_elements_ * INDEX_GROWTH_FACTOR + (float)addReq.ids.size()));
             }
+        }
+
+        if (indexFilterCache[addReq.indexName]->getStats()["size"] > 0) {
+            indexFilterCache[addReq.indexName]->clear();
         }
         
         {
-            std::shared_lock<std::shared_mutex> lock(index_mutex);
-            for (int i = 0; i < add_req.ids.size(); i++) {
-                std::vector<float> vec_data(add_req.vectors[i].begin(), add_req.vectors[i].end());
-                indices[add_req.index_name]->addPoint(vec_data.data(), add_req.ids[i], 0);
-                if (add_req.metadatas.size()) {
-                    data_stores[add_req.index_name]->set(add_req.ids[i], add_req.metadatas[i]);
+            std::shared_lock<std::shared_mutex> lock(indexMutex);
+            for (int i = 0; i < addReq.ids.size(); i++) {
+                std::vector<float>& vec_data = addReq.vectors[i];
+                indices[addReq.indexName]->addPoint(vec_data.data(), addReq.ids[i], 0);
+                if (addReq.metadatas.size()) {
+                    dataStores[addReq.indexName]->set(addReq.ids[i], addReq.metadatas[i]);
                 }
             }
-        }
-        
+        }        
 
         return crow::response(200, "Documents added");
     });
@@ -272,45 +286,87 @@ int main() {
     CROW_ROUTE(app, "/delete_documents").methods(crow::HTTPMethod::POST)
     ([](const crow::request &req) {
         auto data = nlohmann::json::parse(req.body);
-        DeleteDocumentsRequest delete_req = data.get<DeleteDocumentsRequest>();
+        DeleteDocumentsRequest deleteReq = data.get<DeleteDocumentsRequest>();
 
-        if (indices.find(delete_req.index_name) == indices.end()) {
+        if (indices.find(deleteReq.indexName) == indices.end()) {
             return crow::response(404, "Index not found");
         }
 
-        auto *index = indices[delete_req.index_name];
+        auto *index = indices[deleteReq.indexName];
 
-        for (int id : delete_req.ids) {
+        for (int id : deleteReq.ids) {
             index->markDelete(id);
-            data_stores[delete_req.index_name]->remove(id);
+            dataStores[deleteReq.indexName]->remove(id);
         }
 
         return crow::response(200, "Documents deleted");
     });
 
-    CROW_ROUTE(app, "/search").methods(crow::HTTPMethod::POST)
-    ([](const crow::request &req) {
-        auto data = nlohmann::json::parse(req.body);
-        SearchRequest search_req = data.get<SearchRequest>();
-
-        if (indices.find(search_req.index_name) == indices.end()) {
+    CROW_ROUTE(app, "/get_document/<string>/<int>").methods(crow::HTTPMethod::GET)
+    ([](const crow::request &req, std::string indexName, int id) {
+        if (indices.find(indexName) == indices.end()) {
             return crow::response(404, "Index not found");
         }
 
-        auto *index = indices[search_req.index_name];
-        std::vector<float> query_vec(search_req.query_vector.begin(), search_req.query_vector.end());
-        index->setEf(search_req.ef_search);
+        auto *index = indices[indexName];
+        auto hasDoc = dataStores[indexName]->contains(id);
+
+        if (!hasDoc) {
+            return crow::response(404, "Document not found");
+        }
+
+        auto metadata = dataStores[indexName]->get(id);
+        auto vectorData = index->getDataByLabel<float>(id);
+        nlohmann::json response;
+        
+        response["id"] = id;
+        response["vector"] = vectorData;
+        response["metadata"] = nlohmann::json();
+        for (const auto& [key, value] : metadata) {
+            std::visit([&response, &key](auto&& arg) {
+                response["metadata"][key] = arg;
+            }, value);
+        }
+
+        return crow::response(response.dump());
+    });
+
+    CROW_ROUTE(app, "/search").methods(crow::HTTPMethod::POST)
+    ([](const crow::request &req) {
+        auto data = nlohmann::json::parse(req.body);
+        SearchRequest searchReq = data.get<SearchRequest>();
+
+        if (indices.find(searchReq.indexName) == indices.end()) {
+            return crow::response(404, "Index not found");
+        }
+
+        auto *index = indices[searchReq.indexName];
+        std::vector<float>& query_vec = searchReq.queryVector;
+        index->setEf(searchReq.efSearch);
 
 
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
 
-        if (search_req.filter.size() > 0) {
-            std::shared_ptr<FilterASTNode> filters = parseFilters(search_req.filter);
-            std::set<int> filtered_ids = data_stores[search_req.index_name]->filter(filters);
-            FilterIdsInSet filter(filtered_ids);
-            result = index->searchKnn(query_vec.data(), search_req.k, &filter);
+        if (searchReq.filter.size() > 0) {
+            std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
+            std::unordered_set<int> filteredIds;
+            auto &filterCache = indexFilterCache[searchReq.indexName];
+            if (filterCache->get(searchReq.filter) != nullptr) {
+                filteredIds = *filterCache->get(searchReq.filter);
+            } else {
+                filteredIds = dataStores[searchReq.indexName]->filter(filters);
+                filterCache->put(searchReq.filter, filteredIds);
+            }
+            
+            FilterIdsInSet filter(filteredIds);
+
+            if (filteredIds.size() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
+                result = index->searchExactKnn(query_vec.data(), searchReq.k, &filter);
+            } else {
+                result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
+            }
         } else {
-            result = index->searchKnn(query_vec.data(), search_req.k);
+            result = index->searchKnn(query_vec.data(), searchReq.k);
         }
          
         nlohmann::json response;
@@ -325,8 +381,23 @@ int main() {
         std::reverse(ids.begin(), ids.end());
         std::reverse(distances.begin(), distances.end());
 
+
         response["hits"] = ids;
         response["distances"] = distances;
+
+        if (searchReq.returnMetadata) {
+            auto metadatas = dataStores[searchReq.indexName]->getMany(ids);
+            response["metadatas"] = nlohmann::json::array();
+            for (const auto& metadata : metadatas) {
+                nlohmann::json json_metadata;
+                for (const auto& [key, value] : metadata) {
+                    std::visit([&json_metadata, &key](auto&& arg) {
+                        json_metadata[key] = arg;
+                    }, value);
+                }
+                response["metadatas"].push_back(json_metadata);
+            }
+        }
 
         return crow::response(response.dump());
     });

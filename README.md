@@ -12,7 +12,7 @@ This server supports arbitrary metadata in documents on top of HNSWLib, these ca
     
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "ids": [0, 1, 2, 3, 4],
     "vectors": [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7], [0.8, 0.9, 0.1, 0.2]],
     "metadatas": [{"name": "doc_0"}, {"some_number": 2}, {"some_float": 0.4234}, {"name": "doc_3", "category": "cool"}, {"name": "doc_4", "category": "cool"}]
@@ -23,7 +23,7 @@ You can then filter by metadata like so:
 
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "query_vector": [0.1, 0.2, 0.3, 0.4],
     "k": 5,
     "ef_search": 200,
@@ -44,23 +44,26 @@ Logical operators: `AND`, `OR`, `NOT`.
 This is more of a personal project to get better as C++ and write some more complicated data structures. The goal was to hit a good balance of performance, feature completeness, and simplicity. With support for arbitrary metadata on documents and the ability to filter these datatypes, I think it's a good start. It's also pretty fast:
 
 ```python
-DIMENSION = 512  # Dimension of the vectors
-NUM_DOC_BATCHES = 100  # Number of document batches to add
-DOC_BATCH_SIZE = 1000  # Number of documents to add in each batch
-NUM_QUERIES = 10000  # Number of queries to run
-K = 100  # Number of nearest neighbors to retrieve
-EF_CONSTRUCTION = 512  # HNSW index construction parameter
-EF_SEARCH = 512  # HNSW search parameter
-ADD_DOCS_CLIENTS = 10  # Number of parallel clients for adding documents
-SEARCH_CLIENTS = 20  # Number of parallel clients for querying
+INDEX_NAME = "benchmark"
+DIMENSION = 512
+NUM_DOC_BATCHES = 1000
+DOC_BATCH_SIZE = 100
+NUM_QUERIES = 10000
+VECTOR_RANGE = (-1.0, 1.0)
+K = 100
+M = 16
+EF_CONSTRUCTION = 512
+EF_SEARCH = 512
+ADD_DOCS_CLIENTS = 20
+SEARCH_CLIENTS = 20
 ```
 
-For a total of 1M docs on an M1 Macbook Pro:
+For a total of 100k docs on an M1 Macbook Pro:
 ```
-Average time per document: 0.001163 seconds
-Documents per second: 859.83
-Average time per query: 0.000378 seconds
-Queries per second (QPS): 2644.72
+Average time per document: 0.000548 seconds
+Average documents per second: 1825.57
+Average time per query: 0.000865 seconds
+Average queries per second: 1156.02
 ```
 
 ## Building
@@ -112,11 +115,11 @@ Creates a new index with the given parameters. Valid `space_type` values are `L2
 
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "dimension": 4,
-    "index_type": "Approximate",
-    "space_type": "IP",
-    "ef_construction": 200,
+    "indexType": "Approximate",
+    "spaceType": "IP",
+    "efConstruction": 200,
     "M": 16
 }
 ```
@@ -133,7 +136,7 @@ Adds documents to the index.
 
 ```json
 {
-    "index_name": "test_index",
+    "indexName": "test_index",
     "ids": [0, 1, 2, 3, 4],
     "vectors": [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7], [0.8, 0.9, 0.1, 0.2]],
     "metadatas": [{"name": "doc_0"}, {"name": "doc_1"}, {"name": "doc_2"}, {"name": "doc_3"}, {"name": "doc_4"}]
@@ -152,10 +155,10 @@ Searches for the nearest neighbors of a query vector in the index.
 
 ```json
 {
-    "index_name": "test_index",
-    "query_vector": [0.1, 0.2, 0.3, 0.4],
+    "indexName": "test_index",
+    "queryVector": [0.1, 0.2, 0.3, 0.4],
     "k": 5,
-    "ef_search": 200,
+    "efSearch": 200,
     "filter": ""
 }
 ```
@@ -172,7 +175,7 @@ Saves the index to disk.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -188,7 +191,7 @@ Deletes the index from memory.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -204,7 +207,7 @@ Loads the index from disk.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -220,7 +223,7 @@ Deletes the index from disk.
 
 ```json
 {
-    "index_name": "test_index"
+    "indexName": "test_index"
 }
 ```
 
@@ -234,7 +237,7 @@ Deletes the index from disk.
 You can run the tests by running:
 
 ```bash
-rm -rf build && cmake -B build -S . && cmake --build build
+rm -rf build && cmake -B build -S . && cmake --build build -j 8
 ./build/test_filters
 ./build/test_data_store
 ```

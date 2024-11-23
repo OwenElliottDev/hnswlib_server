@@ -36,9 +36,16 @@ def add_documents():
     vectors = [np.random.rand(4).tolist() for _ in range(5)]
     ids = list(range(5))
 
-    metadatas = [{"name": f"doc_{i}", "integer": i, "float": i*100/3.234} for i in range(5)]
+    metadatas = [
+        {"name": f"doc_{i}", "integer": i, "float": i * 100 / 3.234} for i in range(5)
+    ]
 
-    add_docs_data = {"index_name": "test_index", "ids": ids, "vectors": vectors, "metadatas": metadatas}
+    add_docs_data = {
+        "index_name": "test_index",
+        "ids": ids,
+        "vectors": vectors,
+        "metadatas": metadatas,
+    }
 
     response = requests.post(f"{BASE_URL}/add_documents", json=add_docs_data)
 
@@ -59,7 +66,7 @@ def search_index(filter_string=None):
         "query_vector": vector_to_json(query_vector),
         "k": 3,  # Find the 3 nearest neighbors
         "ef_search": 200,
-        "filter": ""
+        "filter": "",
     }
 
     if filter_string:
@@ -72,6 +79,7 @@ def search_index(filter_string=None):
         print("Search results:", results)
     else:
         print(f"Search failed: {response.text}")
+
 
 # 4. Save the Index
 def save_index():
@@ -86,6 +94,7 @@ def save_index():
     else:
         print(f"Failed to save index: {response.text}")
 
+
 # 5. Delete the Index
 def delete_index():
     delete_data = {
@@ -98,6 +107,7 @@ def delete_index():
         print("Index deleted successfully.")
     else:
         print(f"Failed to delete index: {response.text}")
+
 
 # 6. Load the Index
 def load_index():
@@ -112,6 +122,7 @@ def load_index():
     else:
         print(f"Failed to load index: {response.text}")
 
+
 # 7. Delete the index from disk
 def delete_index_from_disk():
     delete_data = {
@@ -125,17 +136,18 @@ def delete_index_from_disk():
     else:
         print(f"Failed to delete index from disk: {response.text}")
 
+
 # Test the Server
 
 create_index()
 add_documents()
 search_index()
-search_index("name = \"doc_2\"")
+search_index('name = "doc_2"')
 search_index("integer > 2")
 save_index()
 delete_index()
 load_index()
 search_index()
-search_index("name = \"doc_2\"")
+search_index('name = "doc_2"')
 delete_index()
 delete_index_from_disk()
