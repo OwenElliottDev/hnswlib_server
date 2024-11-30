@@ -14,11 +14,11 @@ def vector_to_json(vec):
 # 1. Create an Index
 def create_index():
     index_data = {
-        "index_name": "test_index",
+        "indexName": "test_index",
         "dimension": 4,
-        "index_type": "Approximate",
-        "space_type": "L2",
-        "ef_construction": 200,
+        "indexType": "Approximate",
+        "spaceType": "IP",
+        "efConstruction": 200,
         "M": 16,
     }
 
@@ -41,7 +41,7 @@ def add_documents():
     ]
 
     add_docs_data = {
-        "index_name": "test_index",
+        "indexName": "test_index",
         "ids": ids,
         "vectors": vectors,
         "metadatas": metadatas,
@@ -62,11 +62,12 @@ def search_index(filter_string=None):
     query_vector = np.random.rand(4).tolist()
 
     search_data = {
-        "index_name": "test_index",
-        "query_vector": vector_to_json(query_vector),
+        "indexName": "test_index",
+        "queryVector": vector_to_json(query_vector),
         "k": 3,  # Find the 3 nearest neighbors
-        "ef_search": 200,
+        "efSearch": 200,
         "filter": "",
+        "returnMetadata": True,
     }
 
     if filter_string:
@@ -84,7 +85,7 @@ def search_index(filter_string=None):
 # 4. Save the Index
 def save_index():
     save_data = {
-        "index_name": "test_index",
+        "indexName": "test_index",
     }
 
     response = requests.post(f"{BASE_URL}/save_index", json=save_data)
@@ -98,7 +99,7 @@ def save_index():
 # 5. Delete the Index
 def delete_index():
     delete_data = {
-        "index_name": "test_index",
+        "indexName": "test_index",
     }
 
     response = requests.post(f"{BASE_URL}/delete_index", json=delete_data)
@@ -112,7 +113,7 @@ def delete_index():
 # 6. Load the Index
 def load_index():
     load_data = {
-        "index_name": "test_index",
+        "indexName": "test_index",
     }
 
     response = requests.post(f"{BASE_URL}/load_index", json=load_data)
@@ -126,7 +127,7 @@ def load_index():
 # 7. Delete the index from disk
 def delete_index_from_disk():
     delete_data = {
-        "index_name": "test_index",
+        "indexName": "test_index",
     }
 
     response = requests.post(f"{BASE_URL}/delete_index_from_disk", json=delete_data)

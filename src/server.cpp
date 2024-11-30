@@ -377,10 +377,9 @@ int main() {
             distances.push_back(result.top().first);
             result.pop();
         }
-
+        
         std::reverse(ids.begin(), ids.end());
         std::reverse(distances.begin(), distances.end());
-
 
         response["hits"] = ids;
         response["distances"] = distances;

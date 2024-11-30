@@ -104,6 +104,6 @@ inline void from_json(const nlohmann::json& j, FieldValue& value) {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(IndexRequest, indexName, dimension, indexType, spaceType, efConstruction, M)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, indexName, ids)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, indexName, queryVector, k, efSearch, filter)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, indexName, queryVector, k, efSearch, filter, returnMetadata)
 
 #endif // MODELS_HPP
