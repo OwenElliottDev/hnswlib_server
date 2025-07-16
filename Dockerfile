@@ -2,7 +2,7 @@
 # | Stage 1: Build the application binary |
 # \---------------------------------------/
 
-FROM gcc:14 AS build
+FROM gcc:15 AS build
 RUN apt-get update && apt-get install -y cmake
 COPY . /app
 WORKDIR /app
@@ -12,6 +12,6 @@ RUN ./build/test_filters && ./build/test_data_store
 # /------------------------------\
 # | Stage 2: Build minimal image |
 # \------------------------------/
-FROM busybox
+FROM scratch
 COPY --from=build /app/build/bin/server /server
 CMD ["./server"]

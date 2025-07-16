@@ -25,6 +25,11 @@ struct VariantComparator {
 // Alias for field index structure
 using FieldIndex = std::unordered_map<std::string, std::map<FieldValue, std::unordered_set<int>, VariantComparator>>;
 
+struct Facets {
+    std::unordered_map<std::string, std::unordered_map<std::string, int>> counts;
+    std::unordered_map<std::string, std::tuple<int, int>> ranges;
+};
+
 class DataStore {
 private:
     std::mutex mutex;
@@ -46,6 +51,7 @@ public:
     bool matchesFilter(int id, std::shared_ptr<FilterASTNode> filters);
     void remove(int id);
     std::unordered_set<int> filter(std::shared_ptr<FilterASTNode> filters);
+    Facets get_facets(const std::vector<int>& ids);
     void serialize(const std::string &filename);
     void deserialize(const std::string &filename);
 };

@@ -140,3 +140,20 @@ TEST_F(DataStoreTest, TestFilterFloatRange) {
     expected = {19};
     EXPECT_EQ(result, expected);
 }
+
+
+TEST_F(DataStoreTest, TestCountFacets) {
+    dataStore.set(22, {{"name", "Emma"}, {"age", 22L}});
+    dataStore.set(23, {{"name", "Oliver"}, {"age", 22L}});
+    dataStore.set(24, {{"name", "Ava"}, {"age", 30L}});
+    dataStore.set(25, {{"name", "Ava"}, {"age", 20L}});
+
+    std::vector<int> ids = {22, 23, 24, 25};
+    auto facets = dataStore.get_facets(ids);
+
+    EXPECT_EQ(facets.counts["name"]["Emma"], 1);
+    EXPECT_EQ(facets.counts["name"]["Oliver"], 1);
+    EXPECT_EQ(facets.counts["name"]["Ava"], 2);
+    EXPECT_EQ(std::get<0>(facets.ranges["age"]), 20);
+    EXPECT_EQ(std::get<1>(facets.ranges["age"]), 30); 
+}
