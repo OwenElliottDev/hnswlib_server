@@ -40,6 +40,7 @@ class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
     }
 };
 
+
 void remove_index_from_disk(const std::string &indexName) {
     std::filesystem::remove("indices/" + indexName + ".bin");
     std::filesystem::remove("indices/" + indexName + ".json");

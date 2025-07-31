@@ -10,7 +10,7 @@ from queue import Queue
 # Global parameters
 INDEX_NAME = "benchmark"
 DIMENSION = 512
-NUM_DOC_BATCHES = 1000
+NUM_DOC_BATCHES = 500
 DOC_BATCH_SIZE = 100
 NUM_QUERIES = 10000
 VECTOR_RANGE = (-1.0, 1.0)
@@ -19,7 +19,7 @@ M = 16
 EF_CONSTRUCTION = 512
 EF_SEARCH = 512
 ADD_DOCS_CLIENTS = 20
-SEARCH_CLIENTS = 20
+SEARCH_CLIENTS = 100
 
 # URL setup
 server_url = "http://localhost:8685"
