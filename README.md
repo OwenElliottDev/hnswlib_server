@@ -241,3 +241,17 @@ rm -rf build && cmake -B build -S . && cmake --build build -j 8
 ./build/test_filters
 ./build/test_data_store
 ```
+
+## Integration Tests
+
+Integration tests are located in the `integ_tests` directory. You can run them using `pytest`. Dependencies are managed with `uv` for integration tests.
+
+```bash
+uv sync --dev
+```
+
+With HNSWLiv server running, you can execute the integration tests:
+
+```bash
+uv run pytest
+```

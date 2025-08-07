@@ -1,0 +1,17 @@
+[project]
+name = "hnswlib-server"
+version = "0.1.0"
+description = "Integ test running for the hnswlib server"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "numpy>=2.3.2",
+    "pycurl>=7.45.6",
+    "pytest>=8.4.1",
+    "requests>=2.32.4",
+    "tqdm>=4.67.1",
+]
