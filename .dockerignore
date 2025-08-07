@@ -1,1 +1,15 @@
 build/
+*.bin
+*.py
+README.md
+.vscode/
+.venv/
+.github/
+integ_tests/
+pyproject.toml
+uv.lock
+.dockerignore
+.gitignore
+.gitmodules
+Dockerfile
+.python-version

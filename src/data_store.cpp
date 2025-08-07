@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <set>
 #include <typeindex>
+#include <climits>
 
 bool VariantComparator::operator()(const FieldValue& lhs, const FieldValue& rhs) const {
     return lhs < rhs;
@@ -187,6 +188,36 @@ std::unordered_set<int> DataStore::filter(std::shared_ptr<FilterASTNode> filters
     }
 
     return result;
+}
+
+Facets DataStore::get_facets(const std::vector<int>& ids) {
+    Facets facets;
+
+    for (int id : ids) {
+        const auto& document = data[id];
+
+        for (const auto& [field, value] : document) {
+            if (std::holds_alternative<long>(value) ||
+                std::holds_alternative<double>(value))
+            {
+                auto [it, inserted] = facets.ranges.try_emplace(field, INT_MAX, INT_MIN);
+                auto& range = it->second;
+
+                int v = std::holds_alternative<long>(value)
+                      ? static_cast<int>(std::get<long>(value))
+                      : static_cast<int>(std::get<double>(value));
+
+                std::get<0>(range) = std::min(std::get<0>(range), v); // min
+                std::get<1>(range) = std::max(std::get<1>(range), v); // max
+            }
+            else if (std::holds_alternative<std::string>(value)) {
+                const std::string& s = std::get<std::string>(value);
+                facets.counts[field][s]++;
+            }
+        }
+    }
+
+    return facets;
 }
 
 

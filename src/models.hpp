@@ -10,34 +10,29 @@
 struct IndexRequest {
     std::string indexName;
     int dimension;
-    std::string indexType;
-    std::string spaceType;
-    int efConstruction;
-    int M;
+    std::string indexType = "APPROXIMATE"; // default is approximate index
+    std::string spaceType = "IP"; // default is Inner Product space
+    int efConstruction = 512; // default value for efConstruction
+    int M = 16; // default value for M
 };
+
+inline void from_json(const nlohmann::json& j, IndexRequest& req) {
+    j.at("indexName").get_to(req.indexName);
+    j.at("dimension").get_to(req.dimension);
+    // Defaults
+    req.indexType = j.value("indexType", req.indexType);
+    req.spaceType = j.value("spaceType", req.spaceType);
+    req.efConstruction = j.value("efConstruction", req.efConstruction);
+    req.M = j.value("M", req.M);
+}
 
 struct AddDocumentsRequest {
     std::string indexName;
     std::vector<int> ids;
     std::vector<std::vector<float>> vectors;
-    std::vector<std::map<std::string, FieldValue>> metadatas;
+    std::vector<std::map<std::string, FieldValue>> metadatas = {}; // default is empty metadata
 };
 
-struct DeleteDocumentsRequest {
-    std::string indexName;
-    std::vector<int> ids;
-};
-
-struct SearchRequest {
-    std::string indexName;
-    std::vector<float> queryVector;
-    int k;
-    int efSearch;
-    std::string filter;
-    bool returnMetadata;
-};
-
-// Custom serialization for AddDocumentsRequest
 inline void to_json(nlohmann::json& j, const AddDocumentsRequest& req) {
     j["indexName"] = req.indexName;
     j["ids"] = req.ids;
@@ -63,7 +58,9 @@ inline void from_json(const nlohmann::json& j, AddDocumentsRequest& req) {
     j.at("vectors").get_to(req.vectors);
 
     // Convert metadatas manually
-    req.metadatas.clear();
+    if (!j.contains("metadatas")) {
+        return; // No metadata provided
+    }
     for (const auto& json_metadata_map : j.at("metadatas")) {
         std::map<std::string, FieldValue> metadata_map;
         for (const auto& [key, json_value] : json_metadata_map.items()) {
@@ -102,8 +99,31 @@ inline void from_json(const nlohmann::json& j, FieldValue& value) {
     }
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(IndexRequest, indexName, dimension, indexType, spaceType, efConstruction, M)
+
+struct DeleteDocumentsRequest {
+    std::string indexName;
+    std::vector<int> ids;
+};
+
+struct SearchRequest {
+    std::string indexName;
+    std::vector<float> queryVector;
+    int k;
+    int efSearch = 512; // default value
+    std::string filter = ""; // filter string, default is empty (no filter)
+    bool returnMetadata = false; // whether to return metadata or not, default is false
+};
+
+inline void from_json(const nlohmann::json& j, SearchRequest& req) {
+    j.at("indexName").get_to(req.indexName);
+    j.at("queryVector").get_to(req.queryVector);
+    j.at("k").get_to(req.k);
+    // defaults
+    req.efSearch = j.value("efSearch", req.efSearch);
+    req.filter = j.value("filter", req.filter);
+    req.returnMetadata = j.value("returnMetadata", req.returnMetadata);
+}
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, indexName, ids)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchRequest, indexName, queryVector, k, efSearch, filter, returnMetadata)
 
 #endif // MODELS_HPP

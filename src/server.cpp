@@ -40,6 +40,7 @@ class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
     }
 };
 
+
 void remove_index_from_disk(const std::string &indexName) {
     std::filesystem::remove("indices/" + indexName + ".bin");
     std::filesystem::remove("indices/" + indexName + ".json");
@@ -276,6 +277,8 @@ int main() {
                 indices[addReq.indexName]->addPoint(vec_data.data(), addReq.ids[i], 0);
                 if (addReq.metadatas.size()) {
                     dataStores[addReq.indexName]->set(addReq.ids[i], addReq.metadatas[i]);
+                } else {
+                    dataStores[addReq.indexName]->set(addReq.ids[i], std::map<std::string, FieldValue>());
                 }
             }
         }        
