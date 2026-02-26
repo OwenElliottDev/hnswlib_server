@@ -117,11 +117,23 @@ target_include_directories(test_datastore_stress PRIVATE
     src
 )
 
+# Test for save/load
+add_executable(test_save_load tests/test_save_load.cpp src/data_store.cpp src/filters.cpp)
+target_link_libraries(test_save_load PRIVATE gtest gtest_main pthread)
+target_include_directories(test_save_load PRIVATE
+    external/crow/include
+    external/hnswlib
+    external/json/single_include
+    external/asio/asio/include
+    src
+)
+
 # Enable testing
 enable_testing()
 add_test(NAME FiltersTest COMMAND test_filters)
 add_test(NAME DataStoreTest COMMAND test_data_store)
 add_test(NAME DataStoreStressTest COMMAND test_datastore_stress)
+add_test(NAME SaveLoadTest COMMAND test_save_load)
 
 
 option(ENABLE_PROFILING "Enable profiling with gperftools" OFF)
