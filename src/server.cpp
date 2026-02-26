@@ -13,19 +13,15 @@
 #include "data_store.hpp"
 #include "models.hpp"
 #include "filters.hpp"
-#include "lfu_cache.hpp"
 
 #define DEFAULT_INDEX_SIZE 100000
 #define DEFAULT_INDEX_RESIZE_HEADROOM 10000
 #define INDEX_GROWTH_FACTOR 2.0
 #define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
-#define MAX_FILTER_CACHE_SIZE 1000
 
 std::unordered_map<std::string, hnswlib::HierarchicalNSW<float>*> indices;
 std::unordered_map<std::string, nlohmann::json> indexSettings;
 std::unordered_map<std::string, DataStore*> dataStores;
-
-std::unordered_map<std::string, LFUCache<std::string, std::unordered_set<int>>*> indexFilterCache;
 
 std::shared_mutex indexMutex;
 std::mutex dataStoreMutex;
@@ -86,13 +82,13 @@ std::vector<float> bf16_to_floats(const std::vector<uint16_t> &vec) {
     return result;
 }
 
-// Functor to filter results with a set of IDs
+// Functor to filter results with a bitset of IDs
 class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
     public:
-    std::unordered_set<int>& ids;
-    FilterIdsInSet(std::unordered_set<int>& ids) : ids(ids) {}
+    const DynamicBitset& ids;
+    FilterIdsInSet(const DynamicBitset& ids) : ids(ids) {}
     bool operator()(hnswlib::labeltype label_id) {
-        return ids.find(label_id) != ids.end();
+        return ids.test(label_id);
     }
 };
 
@@ -201,7 +197,6 @@ int main() {
             settings["M"] = indexRequest.M;
             indexSettings[indexRequest.indexName] = settings;
             dataStores[indexRequest.indexName] = new DataStore();
-            indexFilterCache[indexRequest.indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
         }
         return crow::response(200, "Index created");
     });
@@ -233,7 +228,6 @@ int main() {
                     std::cerr << "Warning: Failed to load data store: " << e.what() << std::endl;
                 }
             }
-            indexFilterCache[indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
         }
 
         return crow::response(200, "Index loaded");
@@ -280,8 +274,6 @@ int main() {
             indexSettings.erase(indexName);
             delete dataStores[indexName];
             dataStores.erase(indexName);
-            delete indexFilterCache[indexName];
-            indexFilterCache.erase(indexName);
         }
         return crow::response(200, "Index deleted");
     });
@@ -343,10 +335,6 @@ int main() {
             }
         }
 
-        if (indexFilterCache[addReq.indexName]->getStats()["size"] > 0) {
-            indexFilterCache[addReq.indexName]->clear();
-        }
-        
         {
             std::shared_lock<std::shared_mutex> lock(indexMutex);
             std::string vectorType = get_vector_type(addReq.indexName);
@@ -458,18 +446,11 @@ int main() {
 
         if (searchReq.filter.size() > 0) {
             std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
-            std::unordered_set<int> filteredIds;
-            auto &filterCache = indexFilterCache[searchReq.indexName];
-            if (filterCache->get(searchReq.filter) != nullptr) {
-                filteredIds = *filterCache->get(searchReq.filter);
-            } else {
-                filteredIds = dataStores[searchReq.indexName]->filter(filters);
-                filterCache->put(searchReq.filter, filteredIds);
-            }
+            DynamicBitset filteredIds = dataStores[searchReq.indexName]->filter(filters);
 
             FilterIdsInSet filter(filteredIds);
 
-            if (filteredIds.size() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
+            if (filteredIds.count() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
                 result = index->searchExactKnn(queryData, searchReq.k, &filter);
             } else {
                 result = index->searchKnn(queryData, searchReq.k, &filter);

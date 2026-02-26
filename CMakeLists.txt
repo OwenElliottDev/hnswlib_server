@@ -29,12 +29,11 @@ endif()
 
 add_executable(server src/server.cpp src/data_store.cpp src/filters.cpp)
 
-target_include_directories(server PRIVATE 
+target_include_directories(server PRIVATE
     external/crow/include
     external/hnswlib
     external/json/single_include
     external/asio/asio/include
-    external/cpp_caches/src
 )
 
 # platform-specific optimizations
