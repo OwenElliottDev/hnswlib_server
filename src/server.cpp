@@ -5,6 +5,7 @@
 #include "models.hpp"
 #include "nlohmann/json.hpp"
 #include "wal.hpp"
+#include <atomic>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -20,14 +22,6 @@
 #define DEFAULT_INDEX_RESIZE_HEADROOM 10000
 #define INDEX_GROWTH_FACTOR 2.0
 #define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
-
-std::unordered_map<std::string, hnswlib::HierarchicalNSW<float> *> indices;
-std::unordered_map<std::string, nlohmann::json> indexSettings;
-std::unordered_map<std::string, DataStore *> dataStores;
-std::unordered_map<std::string, WriteAheadLog *> walLogs;
-
-std::shared_mutex indexMutex;
-std::mutex dataStoreMutex;
 
 // per-index guard to prevent concurrent addPoint with the same label
 struct InFlightGuard {
@@ -48,9 +42,51 @@ struct InFlightGuard {
   }
 };
 
-std::unordered_map<std::string, InFlightGuard *> inFlightGuards;
+struct BufferedWrite {
+  int id;
+  std::vector<float> vector;
+  std::map<std::string, FieldValue> metadata;
+};
+
+struct IndexContext {
+  hnswlib::HierarchicalNSW<float> *index = nullptr;
+  nlohmann::json settings;
+  DataStore *dataStore = nullptr;
+  WriteAheadLog *wal = nullptr;
+  InFlightGuard *inFlightGuard = nullptr;
+
+  std::shared_mutex mutex; // per-index R/W lock
+  std::atomic<bool> resizing{false};
+  std::vector<BufferedWrite> writeBuffer;
+  std::mutex bufferMutex;
+  std::thread resizeThread;
+
+  ~IndexContext() {
+    if (resizeThread.joinable()) {
+      resizeThread.join();
+    }
+    if (wal) {
+      wal->stopFsyncThread();
+      delete wal;
+    }
+    delete inFlightGuard;
+    delete dataStore;
+    delete index;
+  }
+};
+
+std::unordered_map<std::string, std::shared_ptr<IndexContext>> contexts;
+std::shared_mutex contextMapMutex; // protects the map itself (create/delete/load/list)
 
 int walFsyncIntervalMs = 1000;
+
+std::shared_ptr<IndexContext> getContext(const std::string &indexName) {
+  std::shared_lock<std::shared_mutex> lock(contextMapMutex);
+  auto it = contexts.find(indexName);
+  if (it == contexts.end())
+    return nullptr;
+  return it->second;
+}
 
 hnswlib::SpaceInterface<float> *create_space(const std::string &spaceType, const std::string &vectorType, int dim) {
   if (vectorType == "FLOAT16") {
@@ -68,10 +104,9 @@ hnswlib::SpaceInterface<float> *create_space(const std::string &spaceType, const
   }
 }
 
-std::string get_vector_type(const std::string &indexName) {
-  auto it = indexSettings.find(indexName);
-  if (it != indexSettings.end() && it->second.contains("vectorType")) {
-    return it->second["vectorType"].get<std::string>();
+std::string get_vector_type(const std::shared_ptr<IndexContext> &ctx) {
+  if (ctx->settings.contains("vectorType")) {
+    return ctx->settings["vectorType"].get<std::string>();
   }
   return "FLOAT32";
 }
@@ -141,17 +176,16 @@ void remove_index_from_disk(const std::string &indexName) {
   std::filesystem::remove("indices/" + indexName + ".wal.compact");
 }
 
-void write_index_to_disk(const std::string &indexName) {
+void write_index_to_disk(const std::shared_ptr<IndexContext> &ctx, const std::string &indexName) {
   std::filesystem::create_directories("indices");
 
-  auto *index = indices[indexName];
-  if (!index) {
+  if (!ctx->index) {
     std::cerr << "Error: Index not found: " << indexName << std::endl;
     return;
   }
 
   try {
-    index->saveIndex("indices/" + indexName + ".bin");
+    ctx->index->saveIndex("indices/" + indexName + ".bin");
   } catch (const std::exception &e) {
     std::cerr << "Error saving index: " << e.what() << std::endl;
     return;
@@ -162,10 +196,12 @@ void write_index_to_disk(const std::string &indexName) {
     std::cerr << "Error: Unable to open settings file for writing: " << indexName << std::endl;
     return;
   }
-  settings_file << indexSettings[indexName].dump();
+  settings_file << ctx->settings.dump();
 }
 
-void read_index_from_disk(const std::string &indexName) {
+// reads index + settings from disk into a new IndexContext.
+// caller must hold exclusive contextMapMutex.
+std::shared_ptr<IndexContext> read_index_from_disk(const std::string &indexName) {
   std::string settings_path = "indices/" + indexName + ".json";
   std::ifstream settings_file(settings_path);
   if (!settings_file) {
@@ -183,8 +219,65 @@ void read_index_from_disk(const std::string &indexName) {
   std::string index_path = "indices/" + indexName + ".bin";
   auto *index = new hnswlib::HierarchicalNSW<float>(metricSpace, index_path, false, 0, true);
 
-  indices[indexName] = index;
-  indexSettings[indexName] = indexState;
+  auto ctx = std::make_shared<IndexContext>();
+  ctx->index = index;
+  ctx->settings = indexState;
+  return ctx;
+}
+
+void addPointToIndex(hnswlib::HierarchicalNSW<float> *index, const std::string &vectorType, int id, const std::vector<float> &vec) {
+  if (vectorType == "FLOAT16") {
+    auto converted = floats_to_f16(vec);
+    index->addPoint(converted.data(), id, 0);
+  } else if (vectorType == "BFLOAT16") {
+    auto converted = floats_to_bf16(vec);
+    index->addPoint(converted.data(), id, 0);
+  } else {
+    index->addPoint(vec.data(), id, 0);
+  }
+}
+
+void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string &indexName, size_t newMaxElements) {
+  ctx->resizeThread = std::thread([ctx, indexName, newMaxElements]() {
+    size_t oldMax = ctx->index->max_elements_;
+    std::cerr << "[resize] index=" << indexName << " starting resize from " << oldMax << " to " << newMaxElements << std::endl;
+
+    try {
+      // exclusive lock: waits for in-flight addPoints/searches to drain
+      std::unique_lock<std::shared_mutex> exclusiveLock(ctx->mutex);
+      ctx->index->resizeIndex(static_cast<int>(newMaxElements));
+      exclusiveLock.unlock();
+
+      // flush buffered writes
+      std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+      size_t bufferedCount = ctx->writeBuffer.size();
+      std::cerr << "[resize] index=" << indexName << " resize complete, flushing " << bufferedCount << " buffered writes" << std::endl;
+
+      std::string vectorType = get_vector_type(ctx);
+      for (const auto &bw : ctx->writeBuffer) {
+        try {
+          // resize again if needed during flush
+          if (ctx->index->cur_element_count + 1 + DEFAULT_INDEX_RESIZE_HEADROOM > ctx->index->max_elements_) {
+            ctx->index->resizeIndex(static_cast<int>(static_cast<float>(ctx->index->max_elements_) * (1.0f + INDEX_GROWTH_FACTOR) + 1));
+          }
+          addPointToIndex(ctx->index, vectorType, bw.id, bw.vector);
+          ctx->dataStore->set(bw.id, bw.metadata);
+        } catch (const std::exception &e) {
+          std::cerr << "[resize] index=" << indexName << " error flushing id=" << bw.id << ": " << e.what() << std::endl;
+        }
+      }
+      ctx->writeBuffer.clear();
+      ctx->resizing.store(false);
+
+      std::cerr << "[resize] index=" << indexName << " flush complete, new max=" << ctx->index->max_elements_
+                << ", count=" << ctx->index->cur_element_count << std::endl;
+    } catch (const std::exception &e) {
+      std::cerr << "[resize] index=" << indexName << " resize FAILED: " << e.what() << std::endl;
+      std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+      ctx->writeBuffer.clear();
+      ctx->resizing.store(false);
+    }
+  });
 }
 
 int main() {
@@ -205,18 +298,17 @@ int main() {
     IndexRequest indexRequest = data.get<IndexRequest>();
 
     {
-      std::unique_lock<std::shared_mutex> indexLock(indexMutex);
-      std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
+      std::unique_lock<std::shared_mutex> mapLock(contextMapMutex);
 
-      if (indices.find(indexRequest.indexName) != indices.end()) {
+      if (contexts.find(indexRequest.indexName) != contexts.end()) {
         return crow::response(400, "Index already exists");
       }
 
       hnswlib::SpaceInterface<float> *space = create_space(indexRequest.spaceType, indexRequest.vectorType, indexRequest.dimension);
 
-      auto *index = new hnswlib::HierarchicalNSW<float>(space, DEFAULT_INDEX_SIZE, indexRequest.M, indexRequest.efConstruction, 42, true);
+      auto ctx = std::make_shared<IndexContext>();
+      ctx->index = new hnswlib::HierarchicalNSW<float>(space, DEFAULT_INDEX_SIZE, indexRequest.M, indexRequest.efConstruction, 42, true);
 
-      indices[indexRequest.indexName] = index;
       nlohmann::json settings;
       settings["indexName"] = indexRequest.indexName;
       settings["dimension"] = indexRequest.dimension;
@@ -225,10 +317,10 @@ int main() {
       settings["vectorType"] = indexRequest.vectorType;
       settings["efConstruction"] = indexRequest.efConstruction;
       settings["M"] = indexRequest.M;
-      indexSettings[indexRequest.indexName] = settings;
-      dataStores[indexRequest.indexName] = new DataStore();
+      ctx->settings = settings;
 
-      inFlightGuards[indexRequest.indexName] = new InFlightGuard();
+      ctx->dataStore = new DataStore();
+      ctx->inFlightGuard = new InFlightGuard();
 
       WalHeader wh = makeWalHeader(settings);
       std::string walPath = "indices/" + indexRequest.indexName + ".wal";
@@ -236,7 +328,9 @@ int main() {
       std::filesystem::remove(walPath + ".compact");
       auto *wal = new WriteAheadLog(walPath, wh);
       wal->startFsyncThread(walFsyncIntervalMs);
-      walLogs[indexRequest.indexName] = wal;
+      ctx->wal = wal;
+
+      contexts[indexRequest.indexName] = ctx;
     }
     return crow::response(201, "Index created");
   });
@@ -245,10 +339,9 @@ int main() {
     auto data = nlohmann::json::parse(req.body);
     std::string indexName = data["indexName"];
     {
-      std::unique_lock<std::shared_mutex> indexLock(indexMutex);
-      std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
+      std::unique_lock<std::shared_mutex> mapLock(contextMapMutex);
 
-      if (indices.find(indexName) != indices.end()) {
+      if (contexts.find(indexName) != contexts.end()) {
         return crow::response(400, "Index already exists");
       }
 
@@ -261,18 +354,20 @@ int main() {
         return crow::response(404, std::string("Index not found on disk"));
       }
 
+      std::shared_ptr<IndexContext> ctx;
+
       if (hasSnapshot) {
         try {
-          read_index_from_disk(indexName);
+          ctx = read_index_from_disk(indexName);
         } catch (const std::exception &e) {
           return crow::response(500, std::string("Failed to load index: ") + e.what());
         }
 
-        dataStores[indexName] = new DataStore();
+        ctx->dataStore = new DataStore();
         std::string dataPath = "indices/" + indexName + ".data";
         if (std::filesystem::exists(dataPath)) {
           try {
-            dataStores[indexName]->deserialize(dataPath);
+            ctx->dataStore->deserialize(dataPath);
           } catch (const std::exception &e) {
             std::cerr << "Warning: Failed to load data store: " << e.what() << std::endl;
           }
@@ -293,7 +388,9 @@ int main() {
 
             hnswlib::SpaceInterface<float> *space = create_space(spaceStr, vtStr, walHeader.dimension);
             auto *index = new hnswlib::HierarchicalNSW<float>(space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
-            indices[indexName] = index;
+
+            ctx = std::make_shared<IndexContext>();
+            ctx->index = index;
 
             nlohmann::json settings;
             settings["indexName"] = indexName;
@@ -302,50 +399,49 @@ int main() {
             settings["vectorType"] = vtStr;
             settings["efConstruction"] = walHeader.efConstruction;
             settings["M"] = walHeader.M;
-            indexSettings[indexName] = settings;
-            dataStores[indexName] = new DataStore();
+            ctx->settings = settings;
+            ctx->dataStore = new DataStore();
           }
 
-          auto *index = indices[indexName];
-          std::string vectorType = get_vector_type(indexName);
+          std::string vectorType = get_vector_type(ctx);
 
+          std::cerr << "[wal] index=" << indexName << " replaying " << entries.size() << " WAL entries" << std::endl;
+          size_t addCount = 0, deleteCount = 0;
           for (const auto &entry : entries) {
             if (entry.opType == WalOpType::ADD) {
-              if (index->cur_element_count + 1 + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
-                index->resizeIndex(static_cast<int>(static_cast<float>(index->max_elements_) * (1.0f + INDEX_GROWTH_FACTOR) + 1));
+              if (ctx->index->cur_element_count + 1 + DEFAULT_INDEX_RESIZE_HEADROOM > ctx->index->max_elements_) {
+                ctx->index->resizeIndex(static_cast<int>(static_cast<float>(ctx->index->max_elements_) * (1.0f + INDEX_GROWTH_FACTOR) + 1));
               }
-              if (vectorType == "FLOAT16") {
-                auto converted = floats_to_f16(entry.vector);
-                index->addPoint(converted.data(), entry.docId, 0);
-              } else if (vectorType == "BFLOAT16") {
-                auto converted = floats_to_bf16(entry.vector);
-                index->addPoint(converted.data(), entry.docId, 0);
-              } else {
-                index->addPoint(entry.vector.data(), entry.docId, 0);
-              }
-              dataStores[indexName]->set(entry.docId, entry.metadata);
+              addPointToIndex(ctx->index, vectorType, entry.docId, entry.vector);
+              ctx->dataStore->set(entry.docId, entry.metadata);
+              addCount++;
             } else if (entry.opType == WalOpType::DELETE) {
               try {
-                index->markDelete(entry.docId);
+                ctx->index->markDelete(entry.docId);
               } catch (...) {
                 // safe to ignore during replay
               }
-              dataStores[indexName]->remove(entry.docId);
+              ctx->dataStore->remove(entry.docId);
+              deleteCount++;
             }
           }
+          std::cerr << "[wal] index=" << indexName << " replay complete, " << addCount << " adds, " << deleteCount << " deletes"
+                    << std::endl;
         } catch (const std::exception &e) {
           std::cerr << "Warning: WAL replay error: " << e.what() << std::endl;
         }
 
-        WalHeader wh = makeWalHeader(indexSettings[indexName]);
+        WalHeader wh = makeWalHeader(ctx->settings);
         auto *wal = new WriteAheadLog(walPath, wh);
         wal->startFsyncThread(walFsyncIntervalMs);
-        walLogs[indexName] = wal;
+        ctx->wal = wal;
       }
 
-      if (!inFlightGuards.count(indexName)) {
-        inFlightGuards[indexName] = new InFlightGuard();
+      if (!ctx->inFlightGuard) {
+        ctx->inFlightGuard = new InFlightGuard();
       }
+
+      contexts[indexName] = ctx;
     }
 
     return crow::response(200, "Index loaded");
@@ -355,19 +451,20 @@ int main() {
     auto data = nlohmann::json::parse(req.body);
     std::string indexName = data["indexName"];
 
-    {
-      std::unique_lock<std::shared_mutex> indexLock(indexMutex);
-      std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
+    auto ctx = getContext(indexName);
+    if (!ctx) {
+      return crow::response(404, "Index not found");
+    }
 
-      if (indices.find(indexName) == indices.end()) {
-        return crow::response(404, "Index not found");
-      }
+    {
+      // exclusive lock waits for any in-flight ops and background resize to finish
+      std::unique_lock<std::shared_mutex> lock(ctx->mutex);
 
       try {
-        write_index_to_disk(indexName);
-        dataStores[indexName]->serialize("indices/" + indexName + ".data");
-        if (walLogs.count(indexName) && walLogs[indexName]) {
-          walLogs[indexName]->truncate();
+        write_index_to_disk(ctx, indexName);
+        ctx->dataStore->serialize("indices/" + indexName + ".data");
+        if (ctx->wal) {
+          ctx->wal->truncate();
         }
       } catch (const std::exception &e) {
         return crow::response(500, std::string("Failed to save index: ") + e.what());
@@ -381,29 +478,18 @@ int main() {
     std::string indexName = data["indexName"];
 
     {
-      std::unique_lock<std::shared_mutex> indexLock(indexMutex);
-      std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
+      std::unique_lock<std::shared_mutex> mapLock(contextMapMutex);
 
-      if (indices.find(indexName) == indices.end()) {
+      auto it = contexts.find(indexName);
+      if (it == contexts.end()) {
         return crow::response(404, "Index not found");
       }
 
-      delete indices[indexName];
-      indices.erase(indexName);
-      indexSettings.erase(indexName);
-      delete dataStores[indexName];
-      dataStores.erase(indexName);
-      if (walLogs.count(indexName)) {
-        walLogs[indexName]->stopFsyncThread();
-        delete walLogs[indexName];
-        walLogs.erase(indexName);
-        std::filesystem::remove("indices/" + indexName + ".wal");
-        std::filesystem::remove("indices/" + indexName + ".wal.compact");
-      }
-      if (inFlightGuards.count(indexName)) {
-        delete inFlightGuards[indexName];
-        inFlightGuards.erase(indexName);
-      }
+      auto ctx = it->second;
+      contexts.erase(it);
+
+      std::filesystem::remove("indices/" + indexName + ".wal");
+      std::filesystem::remove("indices/" + indexName + ".wal.compact");
     }
     return crow::response(200, "Index deleted");
   });
@@ -413,10 +499,9 @@ int main() {
     std::string indexName = data["indexName"];
 
     {
-      std::unique_lock<std::shared_mutex> indexLock(indexMutex);
-      std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
+      std::unique_lock<std::shared_mutex> mapLock(contextMapMutex);
 
-      if (indices.find(indexName) != indices.end()) {
+      if (contexts.find(indexName) != contexts.end()) {
         return crow::response(400, "Index is loaded. Please delete it first");
       }
 
@@ -427,11 +512,32 @@ int main() {
 
   CROW_ROUTE(app, "/list_indices").methods(crow::HTTPMethod::GET)([]() {
     nlohmann::json response;
-    for (auto const &[indexName, _] : indices) {
-      response.push_back(indexName);
+    {
+      std::shared_lock<std::shared_mutex> mapLock(contextMapMutex);
+      for (auto const &[indexName, _] : contexts) {
+        response.push_back(indexName);
+      }
+    }
+    return crow::response(response.dump());
+  });
+
+  CROW_ROUTE(app, "/index_status/<string>").methods(crow::HTTPMethod::GET)([](std::string indexName) {
+    auto ctx = getContext(indexName);
+    if (!ctx) {
+      return crow::response(404, "Index not found");
     }
 
-    return crow::response(response.dump());
+    nlohmann::json resp;
+    resp["indexName"] = indexName;
+    resp["resizing"] = ctx->resizing.load();
+    {
+      std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+      resp["bufferedWrites"] = ctx->writeBuffer.size();
+    }
+    resp["currentElements"] = (size_t)ctx->index->cur_element_count;
+    resp["maxElements"] = (size_t)ctx->index->max_elements_;
+    resp["deletedElements"] = (size_t)ctx->index->num_deleted_;
+    return crow::response(resp.dump());
   });
 
   CROW_ROUTE(app, "/add_documents").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
@@ -446,53 +552,100 @@ int main() {
       return crow::response(400, "Number of metadatas does not match number of IDs");
     }
 
-    if (indices.find(addReq.indexName) == indices.end()) {
+    auto ctx = getContext(addReq.indexName);
+    if (!ctx) {
       return crow::response(404, "Index not found");
     }
 
-    auto *index = indices[addReq.indexName];
-
-    if (index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
-
-      std::unique_lock<std::shared_mutex> uniqueLock(indexMutex);
-
-      if (index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
-        index->resizeIndex(
-            (int)((float)index->max_elements_ + (float)index->max_elements_ * INDEX_GROWTH_FACTOR + (float)addReq.ids.size()));
-      }
-    }
-
-    {
-      std::shared_lock<std::shared_mutex> lock(indexMutex);
-      std::string vectorType = get_vector_type(addReq.indexName);
-      auto *guard = inFlightGuards[addReq.indexName];
-      for (int i = 0; i < addReq.ids.size(); i++) {
-        guard->acquire(addReq.ids[i]);
-        if (vectorType == "FLOAT16") {
-          auto converted = floats_to_f16(addReq.vectors[i]);
-          indices[addReq.indexName]->addPoint(converted.data(), addReq.ids[i], 0);
-        } else if (vectorType == "BFLOAT16") {
-          auto converted = floats_to_bf16(addReq.vectors[i]);
-          indices[addReq.indexName]->addPoint(converted.data(), addReq.ids[i], 0);
-        } else {
-          indices[addReq.indexName]->addPoint(addReq.vectors[i].data(), addReq.ids[i], 0);
-        }
+    if (ctx->wal) {
+      for (size_t i = 0; i < addReq.ids.size(); i++) {
         std::map<std::string, FieldValue> meta;
         if (addReq.metadatas.size()) {
           meta = addReq.metadatas[i];
         }
-        dataStores[addReq.indexName]->set(addReq.ids[i], meta);
-        if (walLogs.count(addReq.indexName) && walLogs[addReq.indexName]) {
-          walLogs[addReq.indexName]->logAdd(static_cast<uint32_t>(addReq.ids[i]), addReq.vectors[i], meta);
+        ctx->wal->logAdd(static_cast<uint32_t>(addReq.ids[i]), addReq.vectors[i], meta);
+      }
+    }
+
+    if (ctx->resizing.load()) {
+      std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+      if (ctx->resizing.load()) {
+        for (size_t i = 0; i < addReq.ids.size(); i++) {
+          BufferedWrite bw;
+          bw.id = addReq.ids[i];
+          bw.vector = addReq.vectors[i];
+          if (addReq.metadatas.size()) {
+            bw.metadata = addReq.metadatas[i];
+          }
+          ctx->writeBuffer.push_back(std::move(bw));
         }
+        return crow::response(201, "Documents added");
+      }
+    }
+
+    if (ctx->index->cur_element_count + addReq.ids.size() + DEFAULT_INDEX_RESIZE_HEADROOM > ctx->index->max_elements_) {
+      // try to become the resize initiator
+      bool expected = false;
+      if (ctx->resizing.compare_exchange_strong(expected, true)) {
+        if (ctx->resizeThread.joinable()) {
+          ctx->resizeThread.join();
+        }
+
+        size_t newMax =
+            static_cast<size_t>(static_cast<float>(ctx->index->max_elements_) * (1.0f + INDEX_GROWTH_FACTOR) + addReq.ids.size());
+
+        // buffer writes
+        {
+          std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+          for (size_t i = 0; i < addReq.ids.size(); i++) {
+            BufferedWrite bw;
+            bw.id = addReq.ids[i];
+            bw.vector = addReq.vectors[i];
+            if (addReq.metadatas.size()) {
+              bw.metadata = addReq.metadatas[i];
+            }
+            ctx->writeBuffer.push_back(std::move(bw));
+          }
+        }
+
+        startBackgroundResize(ctx, addReq.indexName, newMax);
+        return crow::response(201, "Documents added");
+      } else {
+        // lost the CAS, someone else is resizing, buffer writes
+        std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+        if (ctx->resizing.load()) {
+          for (size_t i = 0; i < addReq.ids.size(); i++) {
+            BufferedWrite bw;
+            bw.id = addReq.ids[i];
+            bw.vector = addReq.vectors[i];
+            if (addReq.metadatas.size()) {
+              bw.metadata = addReq.metadatas[i];
+            }
+            ctx->writeBuffer.push_back(std::move(bw));
+          }
+          return crow::response(201, "Documents added");
+        }
+      }
+    }
+
+    // normal write path
+    {
+      std::shared_lock<std::shared_mutex> lock(ctx->mutex);
+      std::string vectorType = get_vector_type(ctx);
+      auto *guard = ctx->inFlightGuard;
+      for (size_t i = 0; i < addReq.ids.size(); i++) {
+        guard->acquire(addReq.ids[i]);
+        addPointToIndex(ctx->index, vectorType, addReq.ids[i], addReq.vectors[i]);
+        std::map<std::string, FieldValue> meta;
+        if (addReq.metadatas.size()) {
+          meta = addReq.metadatas[i];
+        }
+        ctx->dataStore->set(addReq.ids[i], meta);
         guard->release(addReq.ids[i]);
       }
 
-      if (walLogs.count(addReq.indexName) && walLogs[addReq.indexName]) {
-        auto *wal = walLogs[addReq.indexName];
-        if (wal->hasDeletes() && wal->approxSize() > WAL_COMPACT_THRESHOLD) {
-          wal->tryCompact();
-        }
+      if (ctx->wal && ctx->wal->hasDeletes() && ctx->wal->approxSize() > WAL_COMPACT_THRESHOLD) {
+        ctx->wal->tryCompact();
       }
     }
 
@@ -503,17 +656,19 @@ int main() {
     auto data = nlohmann::json::parse(req.body);
     DeleteDocumentsRequest deleteReq = data.get<DeleteDocumentsRequest>();
 
-    if (indices.find(deleteReq.indexName) == indices.end()) {
+    auto ctx = getContext(deleteReq.indexName);
+    if (!ctx) {
       return crow::response(404, "Index not found");
     }
 
-    auto *index = indices[deleteReq.indexName];
-
-    for (int id : deleteReq.ids) {
-      index->markDelete(id);
-      dataStores[deleteReq.indexName]->remove(id);
-      if (walLogs.count(deleteReq.indexName) && walLogs[deleteReq.indexName]) {
-        walLogs[deleteReq.indexName]->logDelete(static_cast<uint32_t>(id));
+    {
+      std::shared_lock<std::shared_mutex> lock(ctx->mutex);
+      for (int id : deleteReq.ids) {
+        ctx->index->markDelete(id);
+        ctx->dataStore->remove(id);
+        if (ctx->wal) {
+          ctx->wal->logDelete(static_cast<uint32_t>(id));
+        }
       }
     }
 
@@ -522,28 +677,28 @@ int main() {
 
   CROW_ROUTE(app, "/get_document/<string>/<int>")
       .methods(crow::HTTPMethod::GET)([](const crow::request &req, std::string indexName, int id) {
-        if (indices.find(indexName) == indices.end()) {
+        auto ctx = getContext(indexName);
+        if (!ctx) {
           return crow::response(404, "Index not found");
         }
 
-        auto *index = indices[indexName];
-        auto hasDoc = dataStores[indexName]->contains(id);
+        std::shared_lock<std::shared_mutex> lock(ctx->mutex);
 
-        if (!hasDoc) {
+        if (!ctx->dataStore->contains(id)) {
           return crow::response(404, "Document not found");
         }
 
-        auto metadata = dataStores[indexName]->get(id);
-        std::string vectorType = get_vector_type(indexName);
+        auto metadata = ctx->dataStore->get(id);
+        std::string vectorType = get_vector_type(ctx);
         std::vector<float> vectorData;
         if (vectorType == "FLOAT16") {
-          auto rawData = index->getDataByLabel<uint16_t>(id);
+          auto rawData = ctx->index->getDataByLabel<uint16_t>(id);
           vectorData = f16_to_floats(rawData);
         } else if (vectorType == "BFLOAT16") {
-          auto rawData = index->getDataByLabel<uint16_t>(id);
+          auto rawData = ctx->index->getDataByLabel<uint16_t>(id);
           vectorData = bf16_to_floats(rawData);
         } else {
-          vectorData = index->getDataByLabel<float>(id);
+          vectorData = ctx->index->getDataByLabel<float>(id);
         }
         nlohmann::json response;
 
@@ -561,14 +716,16 @@ int main() {
     auto data = nlohmann::json::parse(req.body);
     SearchRequest searchReq = data.get<SearchRequest>();
 
-    if (indices.find(searchReq.indexName) == indices.end()) {
+    auto ctx = getContext(searchReq.indexName);
+    if (!ctx) {
       return crow::response(404, "Index not found");
     }
 
-    auto *index = indices[searchReq.indexName];
-    index->setEf(searchReq.efSearch);
+    std::shared_lock<std::shared_mutex> lock(ctx->mutex);
 
-    std::string vectorType = get_vector_type(searchReq.indexName);
+    ctx->index->setEf(searchReq.efSearch);
+
+    std::string vectorType = get_vector_type(ctx);
     std::vector<uint16_t> queryConverted;
     const void *queryData;
     if (vectorType == "FLOAT16") {
@@ -585,17 +742,17 @@ int main() {
 
     if (searchReq.filter.size() > 0) {
       std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
-      DynamicBitset filteredIds = dataStores[searchReq.indexName]->filter(filters);
+      DynamicBitset filteredIds = ctx->dataStore->filter(filters);
 
       FilterIdsInSet filter(filteredIds);
 
-      if (filteredIds.count() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
-        result = index->searchExactKnn(queryData, searchReq.k, &filter);
+      if (filteredIds.count() < ctx->index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
+        result = ctx->index->searchExactKnn(queryData, searchReq.k, &filter);
       } else {
-        result = index->searchKnn(queryData, searchReq.k, &filter);
+        result = ctx->index->searchKnn(queryData, searchReq.k, &filter);
       }
     } else {
-      result = index->searchKnn(queryData, searchReq.k);
+      result = ctx->index->searchKnn(queryData, searchReq.k);
     }
 
     nlohmann::json response;
@@ -614,7 +771,7 @@ int main() {
     response["distances"] = distances;
 
     if (searchReq.returnMetadata) {
-      auto metadatas = dataStores[searchReq.indexName]->getMany(ids);
+      auto metadatas = ctx->dataStore->getMany(ids);
       response["metadatas"] = nlohmann::json::array();
       for (const auto &metadata : metadatas) {
         nlohmann::json json_metadata;
@@ -634,16 +791,9 @@ int main() {
 
   app.port(8685).multithreaded().run();
 
-  for (auto &[name, wal] : walLogs) {
-    if (wal) {
-      wal->stopFsyncThread();
-      delete wal;
-    }
+  // clean up
+  {
+    std::unique_lock<std::shared_mutex> mapLock(contextMapMutex);
+    contexts.clear();
   }
-  walLogs.clear();
-
-  for (auto &[name, guard] : inFlightGuards) {
-    delete guard;
-  }
-  inFlightGuards.clear();
 }

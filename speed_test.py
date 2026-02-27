@@ -26,7 +26,7 @@ K = 100
 M = 16
 EF_CONSTRUCTION = 512
 EF_SEARCH = 512
-ADD_DOCS_CLIENTS = 5
+ADD_DOCS_CLIENTS = 20
 SEARCH_CLIENTS = 100
 
 server_url = "http://localhost:8685"
@@ -34,6 +34,7 @@ create_index_url = f"{server_url}/create_index"
 delete_index_url = f"{server_url}/delete_index"
 add_documents_url = f"{server_url}/add_documents"
 search_url = f"{server_url}/search"
+index_status_url = f"{server_url}/index_status/{INDEX_NAME}"
 
 
 class CurlPool:
@@ -165,18 +166,39 @@ def search_index(query_vector):
     return time.perf_counter() - start
 
 
+def wait_for_flush():
+    """Poll index_status until resizing=false and bufferedWrites=0."""
+    while True:
+        buffer = BytesIO()
+        curl = curl_pool.acquire()
+        try:
+            curl.setopt(curl.URL, index_status_url)
+            curl.setopt(curl.HTTPGET, 1)
+            curl.setopt(curl.WRITEDATA, buffer)
+            curl.perform()
+            resp = json.loads(buffer.getvalue().decode("utf-8"))
+        finally:
+            buffer.truncate(0)
+            buffer.seek(0)
+            curl_pool.release(curl)
+        if not resp.get("resizing", False) and resp.get("bufferedWrites", 0) == 0:
+            return resp
+        time.sleep(0.05)
+
+
 def parallel_add_documents(all_docs):
     start_time = time.perf_counter()
     with ThreadPoolExecutor(max_workers=ADD_DOCS_CLIENTS) as executor:
         latencies = list(
             tqdm(executor.map(add_documents, all_docs), total=len(all_docs))
         )
+    # Wait for any background resize + buffered writes to flush
+    status = wait_for_flush()
     elapsed = time.perf_counter() - start_time
     avg_latency_ms = (sum(latencies) / len(latencies)) * 1000 / DOC_BATCH_SIZE
     print(f"Average latency per document: {avg_latency_ms:.4f}ms")
-    print(
-        f"Average documents per second: {NUM_DOC_BATCHES * DOC_BATCH_SIZE / elapsed:.2f}"
-    )
+    print(f"Documents per second: {NUM_DOC_BATCHES * DOC_BATCH_SIZE / elapsed:.2f}")
+    print(f"Index: {status['currentElements']} elements, max={status['maxElements']}")
 
 
 def parallel_search_queries(queries):
@@ -186,7 +208,7 @@ def parallel_search_queries(queries):
     elapsed = time.perf_counter() - start_time
     avg_latency_ms = (sum(latencies) / len(latencies)) * 1000
     print(f"Average latency per query: {avg_latency_ms:.4f}ms")
-    print(f"Average queries per second: {NUM_QUERIES / elapsed:.2f}")
+    print(f"Queries per second: {NUM_QUERIES / elapsed:.2f}")
 
 
 print(f"Vector type: {VECTOR_TYPE}")
@@ -200,7 +222,9 @@ create_index()
 print("\nAdding documents with parallel clients...")
 parallel_add_documents(all_docs)
 
-print("\nRunning queries with parallel clients...")
+print("\nWaiting for buffered writes to flush before searching...")
+wait_for_flush()
+print("Running queries with parallel clients...")
 parallel_search_queries(all_queries)
 
 delete_index()
