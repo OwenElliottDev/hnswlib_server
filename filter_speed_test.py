@@ -1,10 +1,9 @@
 import requests
 import numpy as np
-import json
 import timeit
 
 BASE_URL = "http://localhost:8685"
-DIMENSION = 2 # low because we care about filters here rather than HNSW traversal
+DIMENSION = 2  # low because we care about filters here rather than HNSW traversal
 TOTAL_DOCS = 1_000_000
 
 
