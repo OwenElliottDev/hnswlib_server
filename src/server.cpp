@@ -10,41 +10,135 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_set>
+#include <condition_variable>
 #include "data_store.hpp"
 #include "models.hpp"
 #include "filters.hpp"
-#include "lfu_cache.hpp"
+#include "wal.hpp"
 
 #define DEFAULT_INDEX_SIZE 100000
 #define DEFAULT_INDEX_RESIZE_HEADROOM 10000
 #define INDEX_GROWTH_FACTOR 2.0
 #define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
-#define MAX_FILTER_CACHE_SIZE 1000
 
 std::unordered_map<std::string, hnswlib::HierarchicalNSW<float>*> indices;
 std::unordered_map<std::string, nlohmann::json> indexSettings;
 std::unordered_map<std::string, DataStore*> dataStores;
-
-std::unordered_map<std::string, LFUCache<std::string, std::unordered_set<int>>*> indexFilterCache;
+std::unordered_map<std::string, WriteAheadLog*> walLogs;
 
 std::shared_mutex indexMutex;
 std::mutex dataStoreMutex;
 
-// Functor to filter results with a set of IDs
-class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
-    public:
-    std::unordered_set<int>& ids;
-    FilterIdsInSet(std::unordered_set<int>& ids) : ids(ids) {}
-    bool operator()(hnswlib::labeltype label_id) {
-        return ids.find(label_id) != ids.end();
+// per-index guard to prevent concurrent addPoint with the same label
+struct InFlightGuard {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::unordered_set<int> ids;
+
+    void acquire(int id) {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return ids.find(id) == ids.end(); });
+        ids.insert(id);
+    }
+
+    void release(int id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        ids.erase(id);
+        cv.notify_all();
     }
 };
 
+std::unordered_map<std::string, InFlightGuard*> inFlightGuards;
+
+int walFsyncIntervalMs = 1000;
+
+hnswlib::SpaceInterface<float>* create_space(const std::string &spaceType, const std::string &vectorType, int dim) {
+    if (vectorType == "FLOAT16") {
+        if (spaceType == "IP")
+            return new hnswlib::InnerProductFloat16Space(dim);
+        return new hnswlib::L2Float16Space(dim);
+    } else if (vectorType == "BFLOAT16") {
+        if (spaceType == "IP")
+            return new hnswlib::InnerProductBFloat16Space(dim);
+        return new hnswlib::L2BFloat16Space(dim);
+    } else {
+        if (spaceType == "IP")
+            return new hnswlib::InnerProductSpace(dim);
+        return new hnswlib::L2Space(dim);
+    }
+}
+
+std::string get_vector_type(const std::string &indexName) {
+    auto it = indexSettings.find(indexName);
+    if (it != indexSettings.end() && it->second.contains("vectorType")) {
+        return it->second["vectorType"].get<std::string>();
+    }
+    return "FLOAT32";
+}
+
+std::vector<uint16_t> floats_to_f16(const std::vector<float> &vec) {
+    std::vector<uint16_t> result(vec.size());
+    for (size_t i = 0; i < vec.size(); i++) {
+        result[i] = hnswlib::float_to_half(vec[i]);
+    }
+    return result;
+}
+
+std::vector<uint16_t> floats_to_bf16(const std::vector<float> &vec) {
+    std::vector<uint16_t> result(vec.size());
+    for (size_t i = 0; i < vec.size(); i++) {
+        result[i] = hnswlib::float_to_bfloat16(vec[i]);
+    }
+    return result;
+}
+
+std::vector<float> f16_to_floats(const std::vector<uint16_t> &vec) {
+    std::vector<float> result(vec.size());
+    for (size_t i = 0; i < vec.size(); i++) {
+        result[i] = hnswlib::half_to_float(vec[i]);
+    }
+    return result;
+}
+
+std::vector<float> bf16_to_floats(const std::vector<uint16_t> &vec) {
+    std::vector<float> result(vec.size());
+    for (size_t i = 0; i < vec.size(); i++) {
+        result[i] = hnswlib::bfloat16_to_float(vec[i]);
+    }
+    return result;
+}
+
+// functor to filter results with a bitset of IDs
+class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
+    public:
+    const DynamicBitset& ids;
+    FilterIdsInSet(const DynamicBitset& ids) : ids(ids) {}
+    bool operator()(hnswlib::labeltype label_id) {
+        return ids.test(label_id);
+    }
+};
+
+
+WalHeader makeWalHeader(const nlohmann::json& settings) {
+    WalHeader h;
+    h.dimension = settings.at("dimension").get<int32_t>();
+    h.M = settings.value("M", 16);
+    h.efConstruction = settings.value("efConstruction", 512);
+    std::string space = settings.value("spaceType", "IP");
+    h.spaceType = (space == "L2") ? WalSpaceType::L2 : WalSpaceType::IP;
+    std::string vt = settings.value("vectorType", "FLOAT32");
+    if (vt == "FLOAT16") h.vectorType = WalVectorType::FLOAT16;
+    else if (vt == "BFLOAT16") h.vectorType = WalVectorType::BFLOAT16;
+    else h.vectorType = WalVectorType::FLOAT32;
+    return h;
+}
 
 void remove_index_from_disk(const std::string &indexName) {
     std::filesystem::remove("indices/" + indexName + ".bin");
     std::filesystem::remove("indices/" + indexName + ".json");
     std::filesystem::remove("indices/" + indexName + ".data");
+    std::filesystem::remove("indices/" + indexName + ".wal");
+    std::filesystem::remove("indices/" + indexName + ".wal.compact");
 }
 
 
@@ -73,35 +167,40 @@ void write_index_to_disk(const std::string &indexName) {
 }
 
 void read_index_from_disk(const std::string &indexName) {
-    std::ifstream settings_file("indices/" + indexName + ".json");
+    std::string settings_path = "indices/" + indexName + ".json";
+    std::ifstream settings_file(settings_path);
+    if (!settings_file) {
+        throw std::runtime_error("Settings file not found: " + settings_path);
+    }
     nlohmann::json indexState;
     settings_file >> indexState;
 
-    int dim = indexState["dimension"];
-    std::string space = indexState["spaceType"];
-    int ef_construction = indexState["efConstruction"];
-    int M = indexState["M"];
+    int dim = indexState.at("dimension").get<int>();
+    std::string space = indexState.value("spaceType", "IP");
+    std::string vectorType = indexState.value("vectorType", "FLOAT32");
 
-    hnswlib::SpaceInterface<float>* metricSpace = (space == "IP")
-        ? static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::InnerProductSpace(dim))
-        : static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::L2Space(dim));
+    hnswlib::SpaceInterface<float>* metricSpace = create_space(space, vectorType, dim);
 
+    std::string index_path = "indices/" + indexName + ".bin";
     auto *index = new hnswlib::HierarchicalNSW<float>(
         metricSpace,
-        DEFAULT_INDEX_SIZE,
-        M,
-        ef_construction,
-        42,
+        index_path,
+        false,
+        0,
         true
     );
-    std::string index_path = "indices/" + indexName + ".bin";
-    index->loadIndex(index_path, metricSpace, 10000);
 
     indices[indexName] = index;
     indexSettings[indexName] = indexState;
 }
 
 int main() {
+    const char* fsyncEnv = std::getenv("WAL_FSYNC_INTERVAL_MS");
+    if (fsyncEnv) {
+        walFsyncIntervalMs = std::atoi(fsyncEnv);
+        if (walFsyncIntervalMs <= 0) walFsyncIntervalMs = 1000;
+    }
+
     crow::SimpleApp app;
     app.loglevel(crow::LogLevel::Warning);
 
@@ -123,9 +222,8 @@ int main() {
                 return crow::response(400, "Index already exists");
             }
 
-            hnswlib::SpaceInterface<float>* space = (indexRequest.spaceType == "IP")
-                ? static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::InnerProductSpace(indexRequest.dimension))
-                : static_cast<hnswlib::SpaceInterface<float>*>(new hnswlib::L2Space(indexRequest.dimension));
+            hnswlib::SpaceInterface<float>* space = create_space(
+                indexRequest.spaceType, indexRequest.vectorType, indexRequest.dimension);
 
             auto *index = new hnswlib::HierarchicalNSW<float>(
                 space,
@@ -137,9 +235,26 @@ int main() {
             );
 
             indices[indexRequest.indexName] = index;
-            indexSettings[indexRequest.indexName] = data;
+            nlohmann::json settings;
+            settings["indexName"] = indexRequest.indexName;
+            settings["dimension"] = indexRequest.dimension;
+            settings["indexType"] = indexRequest.indexType;
+            settings["spaceType"] = indexRequest.spaceType;
+            settings["vectorType"] = indexRequest.vectorType;
+            settings["efConstruction"] = indexRequest.efConstruction;
+            settings["M"] = indexRequest.M;
+            indexSettings[indexRequest.indexName] = settings;
             dataStores[indexRequest.indexName] = new DataStore();
-            indexFilterCache[indexRequest.indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
+
+            inFlightGuards[indexRequest.indexName] = new InFlightGuard();
+
+            WalHeader wh = makeWalHeader(settings);
+            std::string walPath = "indices/" + indexRequest.indexName + ".wal";
+            std::filesystem::remove(walPath);
+            std::filesystem::remove(walPath + ".compact");
+            auto* wal = new WriteAheadLog(walPath, wh);
+            wal->startFsyncThread(walFsyncIntervalMs);
+            walLogs[indexRequest.indexName] = wal;
         }
         return crow::response(200, "Index created");
     });
@@ -151,16 +266,105 @@ int main() {
         {
             std::unique_lock<std::shared_mutex> indexLock(indexMutex);
             std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
-        
+
             if (indices.find(indexName) != indices.end()) {
                 return crow::response(400, "Index already exists");
             }
 
-            read_index_from_disk(indexName);
+            bool hasSnapshot = std::filesystem::exists("indices/" + indexName + ".json")
+                            && std::filesystem::exists("indices/" + indexName + ".bin");
+            std::string walPath = "indices/" + indexName + ".wal";
+            bool hasWal = std::filesystem::exists(walPath);
 
-            dataStores[indexName] = new DataStore();
-            dataStores[indexName]->deserialize("indices/" + indexName + ".data");
-            indexFilterCache[indexName] = new LFUCache<std::string, std::unordered_set<int>>(MAX_FILTER_CACHE_SIZE);
+            if (!hasSnapshot && !hasWal) {
+                return crow::response(404, std::string("Index not found on disk"));
+            }
+
+            if (hasSnapshot) {
+                try {
+                    read_index_from_disk(indexName);
+                } catch (const std::exception &e) {
+                    return crow::response(500, std::string("Failed to load index: ") + e.what());
+                }
+
+                dataStores[indexName] = new DataStore();
+                std::string dataPath = "indices/" + indexName + ".data";
+                if (std::filesystem::exists(dataPath)) {
+                    try {
+                        dataStores[indexName]->deserialize(dataPath);
+                    } catch (const std::exception &e) {
+                        std::cerr << "Warning: Failed to load data store: " << e.what() << std::endl;
+                    }
+                }
+            }
+
+            if (hasWal) {
+                try {
+                    auto [walHeader, entries] = WriteAheadLog::readAll(walPath);
+
+                    if (!hasSnapshot) {
+                        std::string spaceStr = (walHeader.spaceType == WalSpaceType::L2) ? "L2" : "IP";
+                        std::string vtStr = "FLOAT32";
+                        if (walHeader.vectorType == WalVectorType::FLOAT16) vtStr = "FLOAT16";
+                        else if (walHeader.vectorType == WalVectorType::BFLOAT16) vtStr = "BFLOAT16";
+
+                        hnswlib::SpaceInterface<float>* space = create_space(spaceStr, vtStr, walHeader.dimension);
+                        auto* index = new hnswlib::HierarchicalNSW<float>(
+                            space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
+                        indices[indexName] = index;
+
+                        nlohmann::json settings;
+                        settings["indexName"] = indexName;
+                        settings["dimension"] = walHeader.dimension;
+                        settings["spaceType"] = spaceStr;
+                        settings["vectorType"] = vtStr;
+                        settings["efConstruction"] = walHeader.efConstruction;
+                        settings["M"] = walHeader.M;
+                        indexSettings[indexName] = settings;
+                        dataStores[indexName] = new DataStore();
+                    }
+
+                    auto* index = indices[indexName];
+                    std::string vectorType = get_vector_type(indexName);
+
+                    for (const auto& entry : entries) {
+                        if (entry.opType == WalOpType::ADD) {
+                            if (index->cur_element_count + 1 + DEFAULT_INDEX_RESIZE_HEADROOM > index->max_elements_) {
+                                index->resizeIndex(static_cast<int>(
+                                    static_cast<float>(index->max_elements_) * (1.0f + INDEX_GROWTH_FACTOR) + 1));
+                            }
+                            if (vectorType == "FLOAT16") {
+                                auto converted = floats_to_f16(entry.vector);
+                                index->addPoint(converted.data(), entry.docId, 0);
+                            } else if (vectorType == "BFLOAT16") {
+                                auto converted = floats_to_bf16(entry.vector);
+                                index->addPoint(converted.data(), entry.docId, 0);
+                            } else {
+                                index->addPoint(entry.vector.data(), entry.docId, 0);
+                            }
+                            dataStores[indexName]->set(entry.docId, entry.metadata);
+                        } else if (entry.opType == WalOpType::DELETE) {
+                            try {
+                                index->markDelete(entry.docId);
+                            } catch (...) {
+                                // safe to ignore during replay
+                            }
+                            dataStores[indexName]->remove(entry.docId);
+                        }
+                    }
+                } catch (const std::exception &e) {
+                    std::cerr << "Warning: WAL replay error: " << e.what() << std::endl;
+                }
+
+                WalHeader wh = makeWalHeader(indexSettings[indexName]);
+                auto* wal = new WriteAheadLog(walPath, wh);
+                wal->startFsyncThread(walFsyncIntervalMs);
+                walLogs[indexName] = wal;
+            }
+
+            if (!inFlightGuards.count(indexName)) {
+                inFlightGuards[indexName] = new InFlightGuard();
+            }
         }
 
         return crow::response(200, "Index loaded");
@@ -174,13 +378,20 @@ int main() {
         {
             std::unique_lock<std::shared_mutex> indexLock(indexMutex);
             std::lock_guard<std::mutex> datastoreLock(dataStoreMutex);
-            
+
             if (indices.find(indexName) == indices.end()) {
                 return crow::response(404, "Index not found");
             }
 
-            write_index_to_disk(indexName);
-            dataStores[indexName]->serialize("indices/" + indexName + ".data");
+            try {
+                write_index_to_disk(indexName);
+                dataStores[indexName]->serialize("indices/" + indexName + ".data");
+                if (walLogs.count(indexName) && walLogs[indexName]) {
+                    walLogs[indexName]->truncate();
+                }
+            } catch (const std::exception &e) {
+                return crow::response(500, std::string("Failed to save index: ") + e.what());
+            }
         }
         return crow::response(200, "Index saved");
     });
@@ -203,8 +414,17 @@ int main() {
             indexSettings.erase(indexName);
             delete dataStores[indexName];
             dataStores.erase(indexName);
-            delete indexFilterCache[indexName];
-            indexFilterCache.erase(indexName);
+            if (walLogs.count(indexName)) {
+                walLogs[indexName]->stopFsyncThread();
+                delete walLogs[indexName];
+                walLogs.erase(indexName);
+                std::filesystem::remove("indices/" + indexName + ".wal");
+                std::filesystem::remove("indices/" + indexName + ".wal.compact");
+            }
+            if (inFlightGuards.count(indexName)) {
+                delete inFlightGuards[indexName];
+                inFlightGuards.erase(indexName);
+            }
         }
         return crow::response(200, "Index deleted");
     });
@@ -266,22 +486,41 @@ int main() {
             }
         }
 
-        if (indexFilterCache[addReq.indexName]->getStats()["size"] > 0) {
-            indexFilterCache[addReq.indexName]->clear();
-        }
-        
         {
             std::shared_lock<std::shared_mutex> lock(indexMutex);
+            std::string vectorType = get_vector_type(addReq.indexName);
+            auto* guard = inFlightGuards[addReq.indexName];
             for (int i = 0; i < addReq.ids.size(); i++) {
-                std::vector<float>& vec_data = addReq.vectors[i];
-                indices[addReq.indexName]->addPoint(vec_data.data(), addReq.ids[i], 0);
-                if (addReq.metadatas.size()) {
-                    dataStores[addReq.indexName]->set(addReq.ids[i], addReq.metadatas[i]);
+                guard->acquire(addReq.ids[i]);
+                if (vectorType == "FLOAT16") {
+                    auto converted = floats_to_f16(addReq.vectors[i]);
+                    indices[addReq.indexName]->addPoint(converted.data(), addReq.ids[i], 0);
+                } else if (vectorType == "BFLOAT16") {
+                    auto converted = floats_to_bf16(addReq.vectors[i]);
+                    indices[addReq.indexName]->addPoint(converted.data(), addReq.ids[i], 0);
                 } else {
-                    dataStores[addReq.indexName]->set(addReq.ids[i], std::map<std::string, FieldValue>());
+                    indices[addReq.indexName]->addPoint(addReq.vectors[i].data(), addReq.ids[i], 0);
+                }
+                std::map<std::string, FieldValue> meta;
+                if (addReq.metadatas.size()) {
+                    meta = addReq.metadatas[i];
+                }
+                dataStores[addReq.indexName]->set(addReq.ids[i], meta);
+                if (walLogs.count(addReq.indexName) && walLogs[addReq.indexName]) {
+                    walLogs[addReq.indexName]->logAdd(
+                        static_cast<uint32_t>(addReq.ids[i]),
+                        addReq.vectors[i], meta);
+                }
+                guard->release(addReq.ids[i]);
+            }
+
+            if (walLogs.count(addReq.indexName) && walLogs[addReq.indexName]) {
+                auto* wal = walLogs[addReq.indexName];
+                if (wal->hasDeletes() && wal->approxSize() > WAL_COMPACT_THRESHOLD) {
+                    wal->tryCompact();
                 }
             }
-        }        
+        }
 
         return crow::response(200, "Documents added");
     });
@@ -300,6 +539,9 @@ int main() {
         for (int id : deleteReq.ids) {
             index->markDelete(id);
             dataStores[deleteReq.indexName]->remove(id);
+            if (walLogs.count(deleteReq.indexName) && walLogs[deleteReq.indexName]) {
+                walLogs[deleteReq.indexName]->logDelete(static_cast<uint32_t>(id));
+            }
         }
 
         return crow::response(200, "Documents deleted");
@@ -319,9 +561,19 @@ int main() {
         }
 
         auto metadata = dataStores[indexName]->get(id);
-        auto vectorData = index->getDataByLabel<float>(id);
+        std::string vectorType = get_vector_type(indexName);
+        std::vector<float> vectorData;
+        if (vectorType == "FLOAT16") {
+            auto rawData = index->getDataByLabel<uint16_t>(id);
+            vectorData = f16_to_floats(rawData);
+        } else if (vectorType == "BFLOAT16") {
+            auto rawData = index->getDataByLabel<uint16_t>(id);
+            vectorData = bf16_to_floats(rawData);
+        } else {
+            vectorData = index->getDataByLabel<float>(id);
+        }
         nlohmann::json response;
-        
+
         response["id"] = id;
         response["vector"] = vectorData;
         response["metadata"] = nlohmann::json();
@@ -344,32 +596,36 @@ int main() {
         }
 
         auto *index = indices[searchReq.indexName];
-        std::vector<float>& query_vec = searchReq.queryVector;
         index->setEf(searchReq.efSearch);
 
+        std::string vectorType = get_vector_type(searchReq.indexName);
+        std::vector<uint16_t> queryConverted;
+        const void* queryData;
+        if (vectorType == "FLOAT16") {
+            queryConverted = floats_to_f16(searchReq.queryVector);
+            queryData = queryConverted.data();
+        } else if (vectorType == "BFLOAT16") {
+            queryConverted = floats_to_bf16(searchReq.queryVector);
+            queryData = queryConverted.data();
+        } else {
+            queryData = searchReq.queryVector.data();
+        }
 
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
 
         if (searchReq.filter.size() > 0) {
             std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
-            std::unordered_set<int> filteredIds;
-            auto &filterCache = indexFilterCache[searchReq.indexName];
-            if (filterCache->get(searchReq.filter) != nullptr) {
-                filteredIds = *filterCache->get(searchReq.filter);
-            } else {
-                filteredIds = dataStores[searchReq.indexName]->filter(filters);
-                filterCache->put(searchReq.filter, filteredIds);
-            }
-            
+            DynamicBitset filteredIds = dataStores[searchReq.indexName]->filter(filters);
+
             FilterIdsInSet filter(filteredIds);
 
-            if (filteredIds.size() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
-                result = index->searchExactKnn(query_vec.data(), searchReq.k, &filter);
+            if (filteredIds.count() < index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
+                result = index->searchExactKnn(queryData, searchReq.k, &filter);
             } else {
-                result = index->searchKnn(query_vec.data(), searchReq.k, &filter);
+                result = index->searchKnn(queryData, searchReq.k, &filter);
             }
         } else {
-            result = index->searchKnn(query_vec.data(), searchReq.k);
+            result = index->searchKnn(queryData, searchReq.k);
         }
          
         nlohmann::json response;
@@ -408,6 +664,18 @@ int main() {
     std::cout << "Press Ctrl+C to quit" << std::endl;
     std::cout << "All other stdout is suppressed as an optimisation" << std::endl;
 
-    // Start the server
     app.port(8685).multithreaded().run();
+
+    for (auto& [name, wal] : walLogs) {
+        if (wal) {
+            wal->stopFsyncThread();
+            delete wal;
+        }
+    }
+    walLogs.clear();
+
+    for (auto& [name, guard] : inFlightGuards) {
+        delete guard;
+    }
+    inFlightGuards.clear();
 }

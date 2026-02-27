@@ -29,8 +29,8 @@ protected:
         auto end = std::chrono::high_resolution_clock::now();
 
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-        std::cout << description << ": Filtering took " << duration << " ms" 
-                  << " and matched " << result.size() << " records." << std::endl;
+        std::cout << description << ": Filtering took " << duration << " ms"
+                  << " and matched " << result.count() << " records." << std::endl;
     }
 };
 

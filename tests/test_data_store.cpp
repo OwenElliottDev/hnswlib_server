@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include "data_store.hpp"
+#include "dynamic_bitset.hpp"
 #include <memory>
 #include <string>
+#include <algorithm>
 
 class DataStoreTest : public ::testing::Test {
 protected:
@@ -9,11 +11,11 @@ protected:
 
     // Utility function to help with setting up filter nodes
     std::shared_ptr<FilterASTNode> makeComparisonFilter(
-        const std::string field, 
-        const std::string op, 
+        const std::string field,
+        const std::string op,
         FieldValue value
     ) {
-        Filter filter = {field, op, value};  
+        Filter filter = {field, op, value};
         return std::make_shared<FilterASTNode>(filter);
     }
 };
@@ -53,8 +55,8 @@ TEST_F(DataStoreTest, FilterByComparison) {
     auto filter = makeComparisonFilter("age", "=", 28L);
     auto result = dataStore.filter(filter);
 
-    std::unordered_set<int> expected = {4, 6};
-    EXPECT_EQ(result, expected);
+    std::vector<int> expected = {4, 6};
+    EXPECT_EQ(result.to_vector(), expected);
 }
 
 TEST_F(DataStoreTest, FilterWithBooleanOp) {
@@ -69,8 +71,8 @@ TEST_F(DataStoreTest, FilterWithBooleanOp) {
 
     auto result = dataStore.filter(root);
 
-    std::unordered_set<int> expected = {7};
-    EXPECT_EQ(result, expected);
+    std::vector<int> expected = {7};
+    EXPECT_EQ(result.to_vector(), expected);
 }
 
 TEST_F(DataStoreTest, SerializationAndDeserialization) {
@@ -104,8 +106,8 @@ TEST_F(DataStoreTest, TestEqualLongFilter) {
 
     auto result = dataStore.filter(ast);
 
-    std::unordered_set<int> expected = {12, 13};
-    EXPECT_EQ(result, expected);
+    std::vector<int> expected = {12, 13};
+    EXPECT_EQ(result.to_vector(), expected);
 }
 
 TEST_F(DataStoreTest, TestEqualStringFilter) {
@@ -119,8 +121,8 @@ TEST_F(DataStoreTest, TestEqualStringFilter) {
 
     auto result = dataStore.filter(ast);
 
-    std::unordered_set<int> expected = {16};
-    EXPECT_EQ(result, expected);
+    std::vector<int> expected = {16};
+    EXPECT_EQ(result.to_vector(), expected);
 }
 
 TEST_F(DataStoreTest, TestFilterFloatRange) {
@@ -131,14 +133,14 @@ TEST_F(DataStoreTest, TestFilterFloatRange) {
     std::string filterString = "age >= 30.0";
     auto ast = parseFilters(filterString);
     auto result = dataStore.filter(ast);
-    std::unordered_set<int> expected = {20, 21};
-    EXPECT_EQ(result, expected);
+    std::vector<int> expected = {20, 21};
+    EXPECT_EQ(result.to_vector(), expected);
 
     filterString = "age < 30.0";
     ast = parseFilters(filterString);
     result = dataStore.filter(ast);
     expected = {19};
-    EXPECT_EQ(result, expected);
+    EXPECT_EQ(result.to_vector(), expected);
 }
 
 
@@ -155,5 +157,5 @@ TEST_F(DataStoreTest, TestCountFacets) {
     EXPECT_EQ(facets.counts["name"]["Oliver"], 1);
     EXPECT_EQ(facets.counts["name"]["Ava"], 2);
     EXPECT_EQ(std::get<0>(facets.ranges["age"]), 20);
-    EXPECT_EQ(std::get<1>(facets.ranges["age"]), 30); 
+    EXPECT_EQ(std::get<1>(facets.ranges["age"]), 30);
 }

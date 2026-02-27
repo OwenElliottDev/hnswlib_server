@@ -1,3 +1,4 @@
+import argparse
 import pycurl
 import json
 import time
@@ -7,10 +8,15 @@ from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--vector-type", choices=["FLOAT32", "FLOAT16", "BFLOAT16"], default="FLOAT32")
+args = parser.parse_args()
+VECTOR_TYPE = args.vector_type
+
 # Global parameters
 INDEX_NAME = "benchmark"
 DIMENSION = 512
-NUM_DOC_BATCHES = 500
+NUM_DOC_BATCHES = 1000
 DOC_BATCH_SIZE = 100
 NUM_QUERIES = 10000
 VECTOR_RANGE = (-1.0, 1.0)
@@ -21,7 +27,6 @@ EF_SEARCH = 512
 ADD_DOCS_CLIENTS = 20
 SEARCH_CLIENTS = 100
 
-# URL setup
 server_url = "http://localhost:8685"
 create_index_url = f"{server_url}/create_index"
 delete_index_url = f"{server_url}/delete_index"
@@ -29,7 +34,6 @@ add_documents_url = f"{server_url}/add_documents"
 search_url = f"{server_url}/search"
 
 
-# Curl pool manager
 class CurlPool:
     def __init__(self, max_size):
         self.pool = Queue(maxsize=max_size)
@@ -58,7 +62,6 @@ class CurlPool:
 curl_pool = CurlPool(max_size=SEARCH_CLIENTS)
 
 
-# Helper function to send POST requests with curl
 def send_post_request(url, data):
     buffer = BytesIO()
     curl = curl_pool.acquire()
@@ -75,14 +78,12 @@ def send_post_request(url, data):
     return response
 
 
-# Function to generate random vectors
 def generate_random_vector(dim, range_min, range_max):
     vec = np.random.uniform(range_min, range_max, dim)
     vec /= np.linalg.norm(vec)
     return vec.tolist()
 
 
-# Pre-generate all documents and queries
 def generate_all_documents():
     all_docs = []
     for _ in range(NUM_DOC_BATCHES):
@@ -101,13 +102,13 @@ def generate_all_queries():
     ]
 
 
-# Index operations
 def create_index():
     create_index_data = {
         "indexName": INDEX_NAME,
         "dimension": DIMENSION,
         "M": M,
         "efConstruction": EF_CONSTRUCTION,
+        "vectorType": VECTOR_TYPE,
     }
     send_post_request(create_index_url, create_index_data)
 
@@ -117,19 +118,24 @@ def delete_index():
     send_post_request(delete_index_url, delete_index_data)
 
 
+import threading
+_doc_id_lock = threading.Lock()
 ADDED_DOCS = 0
 
 
-# Document and query handling
 def add_documents(batch_vectors):
     global ADDED_DOCS
+    with _doc_id_lock:
+        start_id = ADDED_DOCS
+        ADDED_DOCS += DOC_BATCH_SIZE
     add_documents_data = {
         "indexName": INDEX_NAME,
-        "ids": list(range(ADDED_DOCS, ADDED_DOCS + DOC_BATCH_SIZE)),
+        "ids": list(range(start_id, start_id + DOC_BATCH_SIZE)),
         "vectors": batch_vectors,
     }
-    ADDED_DOCS += DOC_BATCH_SIZE
+    start = time.perf_counter()
     send_post_request(add_documents_url, add_documents_data)
+    return time.perf_counter() - start
 
 
 def search_index(query_vector):
@@ -139,33 +145,34 @@ def search_index(query_vector):
         "k": K,
         "efSearch": EF_SEARCH,
     }
+    start = time.perf_counter()
     send_post_request(search_url, search_data)
+    return time.perf_counter() - start
 
 
-# Parallel execution
 def parallel_add_documents(all_docs):
-    start_time = time.time()
+    start_time = time.perf_counter()
     with ThreadPoolExecutor(max_workers=ADD_DOCS_CLIENTS) as executor:
-        list(tqdm(executor.map(add_documents, all_docs), total=len(all_docs)))
+        latencies = list(tqdm(executor.map(add_documents, all_docs), total=len(all_docs)))
+    elapsed = time.perf_counter() - start_time
+    avg_latency_ms = (sum(latencies) / len(latencies)) * 1000 / DOC_BATCH_SIZE
+    print(f"Average latency per document: {avg_latency_ms:.4f}ms")
     print(
-        f"Average time per document: {(time.time() - start_time) / (NUM_DOC_BATCHES * DOC_BATCH_SIZE):.6f} seconds"
-    )
-    print(
-        f"Average documents per second: {NUM_DOC_BATCHES * DOC_BATCH_SIZE / (time.time() - start_time):.2f}"
+        f"Average documents per second: {NUM_DOC_BATCHES * DOC_BATCH_SIZE / elapsed:.2f}"
     )
 
 
 def parallel_search_queries(queries):
-    start_time = time.time()
+    start_time = time.perf_counter()
     with ThreadPoolExecutor(max_workers=SEARCH_CLIENTS) as executor:
-        list(tqdm(executor.map(search_index, queries), total=len(queries)))
-    print(
-        f"Average time per query: {(time.time() - start_time) / NUM_QUERIES:.6f} seconds"
-    )
-    print(f"Average queries per second: {NUM_QUERIES / (time.time() - start_time):.2f}")
+        latencies = list(tqdm(executor.map(search_index, queries), total=len(queries)))
+    elapsed = time.perf_counter() - start_time
+    avg_latency_ms = (sum(latencies) / len(latencies)) * 1000
+    print(f"Average latency per query: {avg_latency_ms:.4f}ms")
+    print(f"Average queries per second: {NUM_QUERIES / elapsed:.2f}")
 
 
-# Run speed tests
+print(f"Vector type: {VECTOR_TYPE}")
 print("Generating documents and queries...")
 all_docs = generate_all_documents()
 all_queries = generate_all_queries()
