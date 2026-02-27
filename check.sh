@@ -39,6 +39,6 @@ trap cleanup EXIT
 
 for vt in FLOAT32 FLOAT16 BFLOAT16; do
     echo "--- $vt ---"
-    python3 "$ROOT/speed_test.py" --vector-type "$vt" 2>&1 | grep -E "Vector type|per document|per second|per query"
+    uv run "$ROOT/speed_test.py" --vector-type "$vt" 2>&1 | grep -E "Vector type|per document|per second|per query"
     echo ""
 done
