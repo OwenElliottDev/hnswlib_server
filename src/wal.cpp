@@ -6,6 +6,8 @@
 
 #ifdef __APPLE__
 #include <fcntl.h>
+#else
+#include <unistd.h>
 #endif
 
 // crc32 with standard reflected polynomial (0xEDB88320)
