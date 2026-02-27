@@ -12,6 +12,7 @@ struct IndexRequest {
     int dimension;
     std::string indexType = "APPROXIMATE"; // default is approximate index
     std::string spaceType = "IP"; // default is Inner Product space
+    std::string vectorType = "FLOAT32"; // "FLOAT32", "FLOAT16", or "BFLOAT16"
     int efConstruction = 512; // default value for efConstruction
     int M = 16; // default value for M
 };
@@ -22,6 +23,7 @@ inline void from_json(const nlohmann::json& j, IndexRequest& req) {
     // Defaults
     req.indexType = j.value("indexType", req.indexType);
     req.spaceType = j.value("spaceType", req.spaceType);
+    req.vectorType = j.value("vectorType", req.vectorType);
     req.efConstruction = j.value("efConstruction", req.efConstruction);
     req.M = j.value("M", req.M);
 }
