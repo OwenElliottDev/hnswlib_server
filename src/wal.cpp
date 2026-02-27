@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
 
 #ifdef __APPLE__
@@ -347,6 +348,9 @@ bool WriteAheadLog::tryCompact() {
     return false;
   }
 
+  size_t sizeBefore = approxSize_.load(std::memory_order_relaxed);
+  std::cerr << "[wal] path=" << path_ << " compaction starting, size=" << sizeBefore << " bytes" << std::endl;
+
   {
     std::lock_guard<std::mutex> lock(writeMutex_);
     std::fflush(file_);
@@ -445,6 +449,10 @@ bool WriteAheadLog::tryCompact() {
     approxSize_.store(static_cast<size_t>(std::ftell(file_)), std::memory_order_relaxed);
     deleteCount_.store(0, std::memory_order_relaxed);
   }
+
+  size_t sizeAfter = approxSize_.load(std::memory_order_relaxed);
+  std::cerr << "[wal] path=" << path_ << " compaction complete, " << entries.size() << " entries -> " << survivors.size() << " survivors, "
+            << sizeBefore << " -> " << sizeAfter << " bytes" << std::endl;
 
   compacting_.store(false);
   return true;

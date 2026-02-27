@@ -55,12 +55,12 @@ The fsync interval can be configured via the `WAL_FSYNC_INTERVAL_MS` environment
 
 ## Purpose
 
-This is more of a personal project to get better as C++ and write some more complicated data structures. The goal was to hit a good balance of performance, feature completeness, and simplicity. With support for arbitrary metadata on documents and the ability to filter these datatypes, I think it's a good start. It's also pretty fast:
+This is more of a personal project to get better as C++. The goal was to hit a good balance of performance, feature completeness, and simplicity. With support for arbitrary metadata on documents and the ability to filter these datatypes, I think it's a good start. It's also pretty fast:
 
 ```python
 INDEX_NAME = "benchmark"
 DIMENSION = 512
-NUM_DOC_BATCHES = 1000
+NUM_DOC_BATCHES = 10000
 DOC_BATCH_SIZE = 100
 NUM_QUERIES = 10000
 VECTOR_RANGE = (-1.0, 1.0)
@@ -69,15 +69,15 @@ M = 16
 EF_CONSTRUCTION = 512
 EF_SEARCH = 512
 ADD_DOCS_CLIENTS = 20
-SEARCH_CLIENTS = 20
+SEARCH_CLIENTS = 100
 ```
 
-For a total of 100k docs on an M1 Macbook Pro:
+For a total of 1 million float32 vectors on a 9950X:
 ```
-Average time per document: 0.000548 seconds
-Average documents per second: 1825.57
-Average time per query: 0.000865 seconds
-Average queries per second: 1156.02
+Average latency per document: 12.7905ms
+Documents per second: 1561.50
+Average latency per query: 61.8965ms
+Queries per second: 1466.23
 ```
 
 ## Building
