@@ -406,27 +406,116 @@ int main() {
           std::string vectorType = get_vector_type(ctx);
 
           std::cerr << "[wal] index=" << indexName << " replaying " << entries.size() << " WAL entries" << std::endl;
-          size_t addCount = 0, deleteCount = 0;
+
+          // Resolve final state per docId (last-writer-wins)
+          struct ResolvedEntry {
+            WalOpType finalOp;
+            const std::vector<float> *vector;
+            const std::map<std::string, FieldValue> *metadata;
+          };
+          std::unordered_map<uint32_t, ResolvedEntry> resolved;
+          resolved.reserve(entries.size());
           for (const auto &entry : entries) {
             if (entry.opType == WalOpType::ADD) {
-              if (ctx->index->cur_element_count + 1 + DEFAULT_INDEX_RESIZE_HEADROOM > ctx->index->max_elements_) {
-                ctx->index->resizeIndex(static_cast<int>(static_cast<float>(ctx->index->max_elements_) * (1.0f + INDEX_GROWTH_FACTOR) + 1));
-              }
-              addPointToIndex(ctx->index, vectorType, entry.docId, entry.vector);
-              ctx->dataStore->set(entry.docId, entry.metadata);
-              addCount++;
+              resolved[entry.docId] = {WalOpType::ADD, &entry.vector, &entry.metadata};
             } else if (entry.opType == WalOpType::DELETE) {
-              try {
-                ctx->index->markDelete(entry.docId);
-              } catch (...) {
-                // safe to ignore during replay
-              }
-              ctx->dataStore->remove(entry.docId);
-              deleteCount++;
+              resolved[entry.docId] = {WalOpType::DELETE, nullptr, nullptr};
             }
           }
-          std::cerr << "[wal] index=" << indexName << " replay complete, " << addCount << " adds, " << deleteCount << " deletes"
-                    << std::endl;
+
+          // Separate into adds and deletes
+          std::vector<std::pair<uint32_t, ResolvedEntry *>> adds;
+          std::vector<uint32_t> deletes;
+          adds.reserve(resolved.size());
+          for (auto &[docId, re] : resolved) {
+            if (re.finalOp == WalOpType::ADD) {
+              adds.push_back({docId, &re});
+            } else {
+              deletes.push_back(docId);
+            }
+          }
+
+          // Pre-resize once to fit all adds
+          size_t needed = ctx->index->cur_element_count + adds.size() + DEFAULT_INDEX_RESIZE_HEADROOM;
+          if (needed > ctx->index->max_elements_) {
+            size_t newMax = static_cast<size_t>(static_cast<float>(needed) * (1.0f + INDEX_GROWTH_FACTOR) + 1);
+            ctx->index->resizeIndex(static_cast<int>(newMax));
+          }
+
+          // Parallel addPoint
+          unsigned numThreads = std::thread::hardware_concurrency();
+          if (numThreads == 0)
+            numThreads = 4;
+          if (numThreads > adds.size())
+            numThreads = static_cast<unsigned>(adds.size());
+
+          std::atomic<size_t> replayedCount{0};
+          size_t totalAdds = adds.size();
+
+          // progress reporter thread (logs every 10% or every 2s, whichever comes first)
+          std::atomic<bool> replayDone{false};
+          std::thread progressThread;
+          if (totalAdds >= 1000) {
+            progressThread = std::thread([&]() {
+              size_t lastReported = 0;
+              while (!replayDone.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                size_t current = replayedCount.load(std::memory_order_relaxed);
+                if (current > lastReported) {
+                  int pct = static_cast<int>(current * 100 / totalAdds);
+                  std::cerr << "[wal] index=" << indexName << " replay progress: " << current << "/" << totalAdds << " (" << pct << "%)"
+                            << std::endl;
+                  lastReported = current;
+                }
+              }
+            });
+          }
+
+          if (numThreads <= 1 || adds.size() < 100) {
+            for (const auto &[docId, re] : adds) {
+              addPointToIndex(ctx->index, vectorType, docId, *re->vector);
+              ctx->dataStore->set(docId, *re->metadata);
+              replayedCount.fetch_add(1, std::memory_order_relaxed);
+            }
+          } else {
+            std::vector<std::thread> threads;
+            threads.reserve(numThreads);
+            size_t chunkSize = (adds.size() + numThreads - 1) / numThreads;
+
+            for (unsigned t = 0; t < numThreads; t++) {
+              size_t start = t * chunkSize;
+              size_t end = std::min(start + chunkSize, adds.size());
+              if (start >= end)
+                break;
+              threads.emplace_back([&ctx, &adds, &vectorType, &replayedCount, start, end]() {
+                for (size_t i = start; i < end; i++) {
+                  auto &[docId, re] = adds[i];
+                  addPointToIndex(ctx->index, vectorType, docId, *re->vector);
+                  ctx->dataStore->set(docId, *re->metadata);
+                  replayedCount.fetch_add(1, std::memory_order_relaxed);
+                }
+              });
+            }
+            for (auto &th : threads) {
+              th.join();
+            }
+          }
+
+          replayDone.store(true, std::memory_order_relaxed);
+          if (progressThread.joinable())
+            progressThread.join();
+
+          // Deletes are fast (just flag marking), do sequentially
+          for (uint32_t docId : deletes) {
+            try {
+              ctx->index->markDelete(docId);
+            } catch (...) {
+            }
+            ctx->dataStore->remove(docId);
+          }
+
+          std::cerr << "[wal] index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size()
+                    << " deletes (resolved from " << entries.size() << " entries, " << numThreads << " threads)" << std::endl;
         } catch (const std::exception &e) {
           std::cerr << "Warning: WAL replay error: " << e.what() << std::endl;
         }
