@@ -102,7 +102,7 @@ def delete_index():
         "indexName": "test_index",
     }
 
-    response = requests.post(f"{BASE_URL}/delete_index", json=delete_data)
+    response = requests.delete(f"{BASE_URL}/delete_index", json=delete_data)
 
     if response.status_code == 200:
         print("Index deleted successfully.")
@@ -130,7 +130,7 @@ def delete_index_from_disk():
         "indexName": "test_index",
     }
 
-    response = requests.post(f"{BASE_URL}/delete_index_from_disk", json=delete_data)
+    response = requests.delete(f"{BASE_URL}/delete_index_from_disk", json=delete_data)
 
     if response.status_code == 200:
         print("Index deleted from disk successfully.")

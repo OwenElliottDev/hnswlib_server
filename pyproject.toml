@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Integ test running for the hnswlib server"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pytest>=9.0.2",
+]
 
 [dependency-groups]
 dev = [
@@ -14,3 +16,6 @@ dev = [
     "requests>=2.32.5",
     "tqdm>=4.67.3",
 ]
+
+[tool.black]
+extend-exclude = "external"

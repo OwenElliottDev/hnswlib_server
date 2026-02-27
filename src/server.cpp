@@ -238,7 +238,7 @@ int main() {
       wal->startFsyncThread(walFsyncIntervalMs);
       walLogs[indexRequest.indexName] = wal;
     }
-    return crow::response(200, "Index created");
+    return crow::response(201, "Index created");
   });
 
   CROW_ROUTE(app, "/load_index").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
@@ -376,7 +376,7 @@ int main() {
     return crow::response(200, "Index saved");
   });
 
-  CROW_ROUTE(app, "/delete_index").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
+  CROW_ROUTE(app, "/delete_index").methods(crow::HTTPMethod::DELETE)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     std::string indexName = data["indexName"];
 
@@ -408,7 +408,7 @@ int main() {
     return crow::response(200, "Index deleted");
   });
 
-  CROW_ROUTE(app, "/delete_index_from_disk").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
+  CROW_ROUTE(app, "/delete_index_from_disk").methods(crow::HTTPMethod::DELETE)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     std::string indexName = data["indexName"];
 
@@ -496,10 +496,10 @@ int main() {
       }
     }
 
-    return crow::response(200, "Documents added");
+    return crow::response(201, "Documents added");
   });
 
-  CROW_ROUTE(app, "/delete_documents").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
+  CROW_ROUTE(app, "/delete_documents").methods(crow::HTTPMethod::DELETE)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     DeleteDocumentsRequest deleteReq = data.get<DeleteDocumentsRequest>();
 

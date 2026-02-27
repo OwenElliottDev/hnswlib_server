@@ -4,3 +4,4 @@ datastore_test.bin
 .venv/
 __pycache__/
 *.pyc
+indices/
