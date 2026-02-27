@@ -9,7 +9,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--vector-type", choices=["FLOAT32", "FLOAT16", "BFLOAT16"], default="FLOAT32")
+parser.add_argument(
+    "--vector-type", choices=["FLOAT32", "FLOAT16", "BFLOAT16"], default="FLOAT32"
+)
 args = parser.parse_args()
 VECTOR_TYPE = args.vector_type
 
@@ -119,6 +121,7 @@ def delete_index():
 
 
 import threading
+
 _doc_id_lock = threading.Lock()
 ADDED_DOCS = 0
 
@@ -153,7 +156,9 @@ def search_index(query_vector):
 def parallel_add_documents(all_docs):
     start_time = time.perf_counter()
     with ThreadPoolExecutor(max_workers=ADD_DOCS_CLIENTS) as executor:
-        latencies = list(tqdm(executor.map(add_documents, all_docs), total=len(all_docs)))
+        latencies = list(
+            tqdm(executor.map(add_documents, all_docs), total=len(all_docs))
+        )
     elapsed = time.perf_counter() - start_time
     avg_latency_ms = (sum(latencies) / len(latencies)) * 1000 / DOC_BATCH_SIZE
     print(f"Average latency per document: {avg_latency_ms:.4f}ms")
