@@ -1,4 +1,3 @@
-// data_store.cpp
 #include "data_store.hpp"
 #include <algorithm>
 #include <climits>
@@ -36,8 +35,8 @@ void DataStore::filterByType(DynamicBitset &result, const std::string &field, co
         result.set(id);
     }
   } else if (type == "<") {
-    auto upper_bound = fieldData.upper_bound(value);
-    for (auto it = fieldData.begin(); it != upper_bound; ++it) {
+    auto lower_bound = fieldData.lower_bound(value);
+    for (auto it = fieldData.begin(); it != lower_bound; ++it) {
       for (int id : it->second)
         result.set(id);
     }

@@ -18,7 +18,7 @@ VECTOR_TYPE = args.vector_type
 # Global parameters
 INDEX_NAME = "benchmark"
 DIMENSION = 512
-NUM_DOC_BATCHES = 1000
+NUM_DOC_BATCHES = 10000
 DOC_BATCH_SIZE = 100
 NUM_QUERIES = 10000
 VECTOR_RANGE = (-1.0, 1.0)
@@ -26,7 +26,7 @@ K = 100
 M = 16
 EF_CONSTRUCTION = 512
 EF_SEARCH = 512
-ADD_DOCS_CLIENTS = 20
+ADD_DOCS_CLIENTS = 5
 SEARCH_CLIENTS = 100
 
 server_url = "http://localhost:8685"
@@ -42,7 +42,7 @@ class CurlPool:
         for _ in range(max_size):
             curl = pycurl.Curl()
             curl.setopt(pycurl.CONNECTTIMEOUT, 5)
-            curl.setopt(pycurl.TIMEOUT, 10)
+            curl.setopt(pycurl.TIMEOUT, 30)
             curl.setopt(
                 pycurl.HTTPHEADER,
                 ["Content-Type: application/json", "Connection: keep-alive"],
@@ -117,7 +117,19 @@ def create_index():
 
 def delete_index():
     delete_index_data = {"indexName": INDEX_NAME}
-    send_post_request(delete_index_url, delete_index_data)
+    buffer = BytesIO()
+    curl = curl_pool.acquire()
+    try:
+        curl.setopt(curl.URL, delete_index_url)
+        curl.setopt(curl.CUSTOMREQUEST, "DELETE")
+        curl.setopt(curl.POSTFIELDS, json.dumps(delete_index_data))
+        curl.setopt(curl.WRITEDATA, buffer)
+        curl.perform()
+    finally:
+        curl.setopt(curl.CUSTOMREQUEST, None)
+        buffer.truncate(0)
+        buffer.seek(0)
+        curl_pool.release(curl)
 
 
 import threading

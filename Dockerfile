@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y cmake
 COPY . /app
 WORKDIR /app
 RUN mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j $(nproc)
-RUN ./build/test_filters && ./build/test_data_store && ./build/test_save_load
+RUN ./build/test_filters && ./build/test_data_store && ./build/test_save_load && ./build/test_wal
 
 # /------------------------------\
 # | Stage 2: Build minimal image |

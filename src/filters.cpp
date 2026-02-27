@@ -1,4 +1,3 @@
-
 #include "filters.hpp"
 #include <regex>
 #include <sstream>

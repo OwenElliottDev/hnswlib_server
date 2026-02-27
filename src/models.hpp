@@ -1,4 +1,3 @@
-// models.hpp
 #ifndef MODELS_HPP
 #define MODELS_HPP
 
