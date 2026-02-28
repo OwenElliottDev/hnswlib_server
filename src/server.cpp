@@ -23,6 +23,16 @@
 #define INDEX_GROWTH_FACTOR 2.0
 #define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
 
+struct UtcTime {
+  friend std::ostream &operator<<(std::ostream &os, const UtcTime &) {
+    std::time_t now = std::time(nullptr);
+    std::tm *utc = std::gmtime(&now);
+    return os << std::put_time(utc, "%Y-%m-%d %H:%M:%S UTC");
+  }
+};
+
+#define LOG(src) std::cerr << "[" << UtcTime{} << "][" << src << "] "
+
 // per-index guard to prevent concurrent addPoint with the same label
 struct InFlightGuard {
   std::mutex mutex;
@@ -240,7 +250,7 @@ void addPointToIndex(hnswlib::HierarchicalNSW<float> *index, const std::string &
 void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string &indexName, size_t newMaxElements) {
   ctx->resizeThread = std::thread([ctx, indexName, newMaxElements]() {
     size_t oldMax = ctx->index->max_elements_;
-    std::cerr << "[resize] index=" << indexName << " starting resize from " << oldMax << " to " << newMaxElements << std::endl;
+    LOG("resize") << "index=" << indexName << " starting resize from " << oldMax << " to " << newMaxElements << std::endl;
 
     try {
       // exclusive lock: waits for in-flight addPoints/searches to drain
@@ -251,7 +261,7 @@ void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string 
       // flush buffered writes
       std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
       size_t bufferedCount = ctx->writeBuffer.size();
-      std::cerr << "[resize] index=" << indexName << " resize complete, flushing " << bufferedCount << " buffered writes" << std::endl;
+      LOG("resize") << "index=" << indexName << " resize complete, flushing " << bufferedCount << " buffered writes" << std::endl;
 
       std::string vectorType = get_vector_type(ctx);
       for (const auto &bw : ctx->writeBuffer) {
@@ -263,16 +273,16 @@ void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string 
           addPointToIndex(ctx->index, vectorType, bw.id, bw.vector);
           ctx->dataStore->set(bw.id, bw.metadata);
         } catch (const std::exception &e) {
-          std::cerr << "[resize] index=" << indexName << " error flushing id=" << bw.id << ": " << e.what() << std::endl;
+          LOG("resize") << "index=" << indexName << " error flushing id=" << bw.id << ": " << e.what() << std::endl;
         }
       }
       ctx->writeBuffer.clear();
       ctx->resizing.store(false);
 
-      std::cerr << "[resize] index=" << indexName << " flush complete, new max=" << ctx->index->max_elements_
-                << ", count=" << ctx->index->cur_element_count << std::endl;
+      LOG("resize") << "index=" << indexName << " flush complete, new max=" << ctx->index->max_elements_
+                    << ", count=" << ctx->index->cur_element_count << std::endl;
     } catch (const std::exception &e) {
-      std::cerr << "[resize] index=" << indexName << " resize FAILED: " << e.what() << std::endl;
+      LOG("resize") << "index=" << indexName << " resize FAILED: " << e.what() << std::endl;
       std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
       ctx->writeBuffer.clear();
       ctx->resizing.store(false);
@@ -369,7 +379,7 @@ int main() {
           try {
             ctx->dataStore->deserialize(dataPath);
           } catch (const std::exception &e) {
-            std::cerr << "Warning: Failed to load data store: " << e.what() << std::endl;
+            LOG("ERROR") << "Failed to load data store: " << e.what() << std::endl;
           }
         }
       }
@@ -405,7 +415,7 @@ int main() {
 
           std::string vectorType = get_vector_type(ctx);
 
-          std::cerr << "[wal] index=" << indexName << " replaying " << entries.size() << " WAL entries" << std::endl;
+          LOG("wal") << "index=" << indexName << " replaying " << entries.size() << " WAL entries" << std::endl;
 
           // Resolve final state per docId (last-writer-wins)
           struct ResolvedEntry {
@@ -463,8 +473,8 @@ int main() {
                 size_t current = replayedCount.load(std::memory_order_relaxed);
                 if (current > lastReported) {
                   int pct = static_cast<int>(current * 100 / totalAdds);
-                  std::cerr << "[wal] index=" << indexName << " replay progress: " << current << "/" << totalAdds << " (" << pct << "%)"
-                            << std::endl;
+                  LOG("wal") << "index=" << indexName << " replay progress: " << current << "/" << totalAdds << " (" << pct << "%)"
+                             << std::endl;
                   lastReported = current;
                 }
               }
@@ -514,10 +524,10 @@ int main() {
             ctx->dataStore->remove(docId);
           }
 
-          std::cerr << "[wal] index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size()
-                    << " deletes (resolved from " << entries.size() << " entries, " << numThreads << " threads)" << std::endl;
+          LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size()
+                     << " deletes (resolved from " << entries.size() << " entries, " << numThreads << " threads)" << std::endl;
         } catch (const std::exception &e) {
-          std::cerr << "Warning: WAL replay error: " << e.what() << std::endl;
+          LOG("ERROR") << "WAL replay error: " << e.what() << std::endl;
         }
 
         WalHeader wh = makeWalHeader(ctx->settings);
