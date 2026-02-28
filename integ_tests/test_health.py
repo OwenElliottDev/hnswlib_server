@@ -1,6 +1,6 @@
 import requests
 
-from conftest import BASE_URL, create_index, force_remove_index
+from conftest import BASE_URL, create_index
 
 
 def test_health_endpoint():

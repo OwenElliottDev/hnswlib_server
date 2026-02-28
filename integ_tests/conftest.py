@@ -1,3 +1,5 @@
+import time
+
 import pytest
 import requests
 import os
@@ -37,6 +39,22 @@ def delete_index_from_disk(name):
     return requests.delete(
         f"{BASE_URL}/delete_index_from_disk", json={"indexName": name}
     )
+
+
+def wait_for_replay_complete(name, timeout=30):
+    """Poll index_status until WAL replay is done or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        res = requests.get(f"{BASE_URL}/index_status/{name}")
+        assert res.status_code == 200, f"index_status failed: {res.text}"
+        status = res.json()
+        if not status.get("replayingWal", False):
+            assert (
+                "walReplayError" not in status
+            ), f"WAL replay error: {status['walReplayError']}"
+            return status
+        time.sleep(0.1)
+    raise TimeoutError(f"WAL replay for '{name}' did not complete within {timeout}s")
 
 
 @pytest.fixture(scope="session", autouse=True)

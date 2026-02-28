@@ -58,6 +58,12 @@ struct BufferedWrite {
   std::map<std::string, FieldValue> metadata;
 };
 
+struct ResolvedAdd {
+  uint32_t docId;
+  std::vector<float> vector;
+  std::map<std::string, FieldValue> metadata;
+};
+
 struct IndexContext {
   hnswlib::HierarchicalNSW<float> *index = nullptr;
   nlohmann::json settings;
@@ -71,7 +77,20 @@ struct IndexContext {
   std::mutex bufferMutex;
   std::thread resizeThread;
 
+  // WAL replay state
+  std::atomic<bool> replayingWal{false};
+  std::atomic<size_t> walReplayedCount{0};
+  std::atomic<size_t> walReplayTotalAdds{0};
+  std::string walReplayError; // protected by bufferMutex
+  std::thread walReplayThread;
+  std::atomic<bool> walReplayCancelled{false};
+
   ~IndexContext() {
+    // cancel and join WAL replay thread first
+    walReplayCancelled.store(true, std::memory_order_release);
+    if (walReplayThread.joinable()) {
+      walReplayThread.join();
+    }
     if (resizeThread.joinable()) {
       resizeThread.join();
     }
@@ -290,6 +309,123 @@ void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string 
   });
 }
 
+void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, std::vector<ResolvedAdd> adds, std::vector<uint32_t> deletes,
+                              const std::string &walPath) {
+  ctx->walReplayTotalAdds.store(adds.size(), std::memory_order_relaxed);
+  ctx->walReplayedCount.store(0, std::memory_order_relaxed);
+
+  ctx->walReplayThread = std::thread([ctx, indexName, adds = std::move(adds), deletes = std::move(deletes), walPath]() {
+    try {
+      std::string vectorType = ctx->settings.value("vectorType", "FLOAT32");
+
+      // pre-resize once to fit all adds
+      size_t needed = ctx->index->cur_element_count + adds.size() + DEFAULT_INDEX_RESIZE_HEADROOM;
+      if (needed > ctx->index->max_elements_) {
+        size_t newMax = static_cast<size_t>(static_cast<float>(needed) * (1.0f + INDEX_GROWTH_FACTOR) + 1);
+        ctx->index->resizeIndex(static_cast<int>(newMax));
+      }
+
+      // progress reporter thread
+      std::atomic<bool> replayDone{false};
+      size_t totalAdds = adds.size();
+      std::thread progressThread;
+      if (totalAdds >= 1000) {
+        progressThread = std::thread([ctx, &replayDone, totalAdds, &indexName]() {
+          size_t lastReported = 0;
+          while (!replayDone.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            size_t current = ctx->walReplayedCount.load(std::memory_order_relaxed);
+            if (current > lastReported) {
+              int pct = static_cast<int>(current * 100 / totalAdds);
+              LOG("wal") << "index=" << indexName << " replay progress: " << current << "/" << totalAdds << " (" << pct << "%)"
+                         << std::endl;
+              lastReported = current;
+            }
+          }
+        });
+      }
+
+      unsigned numThreads = std::thread::hardware_concurrency();
+      if (numThreads == 0)
+        numThreads = 4;
+      if (numThreads > adds.size())
+        numThreads = static_cast<unsigned>(adds.size());
+
+      if (numThreads <= 1 || adds.size() < 100) {
+        for (const auto &ra : adds) {
+          if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
+            break;
+          addPointToIndex(ctx->index, vectorType, ra.docId, ra.vector);
+          ctx->dataStore->set(ra.docId, ra.metadata);
+          ctx->walReplayedCount.fetch_add(1, std::memory_order_relaxed);
+        }
+      } else {
+        std::vector<std::thread> threads;
+        threads.reserve(numThreads);
+        size_t chunkSize = (adds.size() + numThreads - 1) / numThreads;
+
+        for (unsigned t = 0; t < numThreads; t++) {
+          size_t start = t * chunkSize;
+          size_t end = std::min(start + chunkSize, adds.size());
+          if (start >= end)
+            break;
+          threads.emplace_back([ctx, &adds, &vectorType, start, end]() {
+            for (size_t i = start; i < end; i++) {
+              if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
+                break;
+              const auto &ra = adds[i];
+              addPointToIndex(ctx->index, vectorType, ra.docId, ra.vector);
+              ctx->dataStore->set(ra.docId, ra.metadata);
+              ctx->walReplayedCount.fetch_add(1, std::memory_order_relaxed);
+            }
+          });
+        }
+        for (auto &th : threads) {
+          th.join();
+        }
+      }
+
+      replayDone.store(true, std::memory_order_relaxed);
+      if (progressThread.joinable())
+        progressThread.join();
+
+      if (ctx->walReplayCancelled.load(std::memory_order_relaxed)) {
+        LOG("wal") << "index=" << indexName << " replay cancelled" << std::endl;
+        ctx->replayingWal.store(false, std::memory_order_release);
+        return;
+      }
+
+      // deletes just flag marking (fast), do sequentially
+      for (uint32_t docId : deletes) {
+        if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
+          break;
+        try {
+          ctx->index->markDelete(docId);
+        } catch (...) {
+        }
+        ctx->dataStore->remove(docId);
+      }
+
+      LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size() << " deletes" << std::endl;
+
+      // create fresh WAL at same path
+      WalHeader wh = makeWalHeader(ctx->settings);
+      auto *wal = new WriteAheadLog(walPath, wh);
+      wal->startFsyncThread(walFsyncIntervalMs);
+      ctx->wal = wal;
+
+      ctx->replayingWal.store(false, std::memory_order_release);
+    } catch (const std::exception &e) {
+      LOG("ERROR") << "index=" << indexName << " WAL replay error: " << e.what() << std::endl;
+      {
+        std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
+        ctx->walReplayError = e.what();
+      }
+      ctx->replayingWal.store(false, std::memory_order_release);
+    }
+  });
+}
+
 int main() {
   const char *fsyncEnv = std::getenv("WAL_FSYNC_INTERVAL_MS");
   if (fsyncEnv) {
@@ -348,6 +484,13 @@ int main() {
   CROW_ROUTE(app, "/load_index").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     std::string indexName = data["indexName"];
+
+    std::shared_ptr<IndexContext> ctx;
+    std::vector<ResolvedAdd> resolvedAdds;
+    std::vector<uint32_t> resolvedDeletes;
+    std::string walPath = "indices/" + indexName + ".wal";
+    bool hasWalEntries = false;
+
     {
       std::unique_lock<std::shared_mutex> mapLock(contextMapMutex);
 
@@ -357,14 +500,11 @@ int main() {
 
       bool hasSnapshot =
           std::filesystem::exists("indices/" + indexName + ".json") && std::filesystem::exists("indices/" + indexName + ".bin");
-      std::string walPath = "indices/" + indexName + ".wal";
       bool hasWal = std::filesystem::exists(walPath);
 
       if (!hasSnapshot && !hasWal) {
         return crow::response(404, std::string("Index not found on disk"));
       }
-
-      std::shared_ptr<IndexContext> ctx;
 
       if (hasSnapshot) {
         try {
@@ -413,134 +553,70 @@ int main() {
             ctx->dataStore = new DataStore();
           }
 
-          std::string vectorType = get_vector_type(ctx);
+          LOG("wal") << "index=" << indexName << " read " << entries.size() << " WAL entries" << std::endl;
 
-          LOG("wal") << "index=" << indexName << " replaying " << entries.size() << " WAL entries" << std::endl;
+          // resolve final state per docId (last-writer-wins) into owned data
+          std::unordered_map<uint32_t, size_t> lastAddIndex; // docId -> index into resolvedAdds
+          std::unordered_set<uint32_t> deletedIds;
 
-          // Resolve final state per docId (last-writer-wins)
-          struct ResolvedEntry {
-            WalOpType finalOp;
-            const std::vector<float> *vector;
-            const std::map<std::string, FieldValue> *metadata;
-          };
-          std::unordered_map<uint32_t, ResolvedEntry> resolved;
-          resolved.reserve(entries.size());
           for (const auto &entry : entries) {
             if (entry.opType == WalOpType::ADD) {
-              resolved[entry.docId] = {WalOpType::ADD, &entry.vector, &entry.metadata};
-            } else if (entry.opType == WalOpType::DELETE) {
-              resolved[entry.docId] = {WalOpType::DELETE, nullptr, nullptr};
-            }
-          }
-
-          // Separate into adds and deletes
-          std::vector<std::pair<uint32_t, ResolvedEntry *>> adds;
-          std::vector<uint32_t> deletes;
-          adds.reserve(resolved.size());
-          for (auto &[docId, re] : resolved) {
-            if (re.finalOp == WalOpType::ADD) {
-              adds.push_back({docId, &re});
-            } else {
-              deletes.push_back(docId);
-            }
-          }
-
-          // Pre-resize once to fit all adds
-          size_t needed = ctx->index->cur_element_count + adds.size() + DEFAULT_INDEX_RESIZE_HEADROOM;
-          if (needed > ctx->index->max_elements_) {
-            size_t newMax = static_cast<size_t>(static_cast<float>(needed) * (1.0f + INDEX_GROWTH_FACTOR) + 1);
-            ctx->index->resizeIndex(static_cast<int>(newMax));
-          }
-
-          // Parallel addPoint
-          unsigned numThreads = std::thread::hardware_concurrency();
-          if (numThreads == 0)
-            numThreads = 4;
-          if (numThreads > adds.size())
-            numThreads = static_cast<unsigned>(adds.size());
-
-          std::atomic<size_t> replayedCount{0};
-          size_t totalAdds = adds.size();
-
-          // progress reporter thread (logs every 10% or every 2s, whichever comes first)
-          std::atomic<bool> replayDone{false};
-          std::thread progressThread;
-          if (totalAdds >= 1000) {
-            progressThread = std::thread([&]() {
-              size_t lastReported = 0;
-              while (!replayDone.load(std::memory_order_relaxed)) {
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                size_t current = replayedCount.load(std::memory_order_relaxed);
-                if (current > lastReported) {
-                  int pct = static_cast<int>(current * 100 / totalAdds);
-                  LOG("wal") << "index=" << indexName << " replay progress: " << current << "/" << totalAdds << " (" << pct << "%)"
-                             << std::endl;
-                  lastReported = current;
-                }
+              deletedIds.erase(entry.docId);
+              auto it = lastAddIndex.find(entry.docId);
+              if (it != lastAddIndex.end()) {
+                // update existing resolved add in place
+                resolvedAdds[it->second].vector = entry.vector;
+                resolvedAdds[it->second].metadata = entry.metadata;
+              } else {
+                lastAddIndex[entry.docId] = resolvedAdds.size();
+                resolvedAdds.push_back({entry.docId, entry.vector, entry.metadata});
               }
-            });
-          }
-
-          if (numThreads <= 1 || adds.size() < 100) {
-            for (const auto &[docId, re] : adds) {
-              addPointToIndex(ctx->index, vectorType, docId, *re->vector);
-              ctx->dataStore->set(docId, *re->metadata);
-              replayedCount.fetch_add(1, std::memory_order_relaxed);
-            }
-          } else {
-            std::vector<std::thread> threads;
-            threads.reserve(numThreads);
-            size_t chunkSize = (adds.size() + numThreads - 1) / numThreads;
-
-            for (unsigned t = 0; t < numThreads; t++) {
-              size_t start = t * chunkSize;
-              size_t end = std::min(start + chunkSize, adds.size());
-              if (start >= end)
-                break;
-              threads.emplace_back([&ctx, &adds, &vectorType, &replayedCount, start, end]() {
-                for (size_t i = start; i < end; i++) {
-                  auto &[docId, re] = adds[i];
-                  addPointToIndex(ctx->index, vectorType, docId, *re->vector);
-                  ctx->dataStore->set(docId, *re->metadata);
-                  replayedCount.fetch_add(1, std::memory_order_relaxed);
+            } else if (entry.opType == WalOpType::DELETE) {
+              auto it = lastAddIndex.find(entry.docId);
+              if (it != lastAddIndex.end()) {
+                size_t idx = it->second;
+                if (idx != resolvedAdds.size() - 1) {
+                  uint32_t movedDocId = resolvedAdds.back().docId;
+                  resolvedAdds[idx] = std::move(resolvedAdds.back());
+                  lastAddIndex[movedDocId] = idx;
                 }
-              });
-            }
-            for (auto &th : threads) {
-              th.join();
+                resolvedAdds.pop_back();
+                lastAddIndex.erase(it);
+              }
+              deletedIds.insert(entry.docId);
             }
           }
 
-          replayDone.store(true, std::memory_order_relaxed);
-          if (progressThread.joinable())
-            progressThread.join();
+          resolvedDeletes.assign(deletedIds.begin(), deletedIds.end());
+          hasWalEntries = !resolvedAdds.empty() || !resolvedDeletes.empty();
 
-          // Deletes are fast (just flag marking), do sequentially
-          for (uint32_t docId : deletes) {
-            try {
-              ctx->index->markDelete(docId);
-            } catch (...) {
-            }
-            ctx->dataStore->remove(docId);
-          }
-
-          LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size()
-                     << " deletes (resolved from " << entries.size() << " entries, " << numThreads << " threads)" << std::endl;
         } catch (const std::exception &e) {
-          LOG("ERROR") << "WAL replay error: " << e.what() << std::endl;
+          LOG("ERROR") << "WAL read error: " << e.what() << std::endl;
+          if (!ctx) {
+            return crow::response(500, std::string("Failed to read WAL: ") + e.what());
+          }
         }
 
-        WalHeader wh = makeWalHeader(ctx->settings);
-        auto *wal = new WriteAheadLog(walPath, wh);
-        wal->startFsyncThread(walFsyncIntervalMs);
-        ctx->wal = wal;
+        // if no WAL entries to replay, create fresh WAL immediately
+        if (!hasWalEntries) {
+          WalHeader wh = makeWalHeader(ctx->settings);
+          auto *wal = new WriteAheadLog(walPath, wh);
+          wal->startFsyncThread(walFsyncIntervalMs);
+          ctx->wal = wal;
+        }
       }
 
-      if (!ctx->inFlightGuard) {
-        ctx->inFlightGuard = new InFlightGuard();
+      ctx->inFlightGuard = new InFlightGuard();
+
+      if (hasWalEntries) {
+        ctx->replayingWal.store(true, std::memory_order_release);
       }
 
       contexts[indexName] = ctx;
+    } // lock released
+
+    if (hasWalEntries) {
+      startBackgroundWalReplay(ctx.get(), indexName, std::move(resolvedAdds), std::move(resolvedDeletes), walPath);
     }
 
     return crow::response(200, "Index loaded");
@@ -553,6 +629,10 @@ int main() {
     auto ctx = getContext(indexName);
     if (!ctx) {
       return crow::response(404, "Index not found");
+    }
+
+    if (ctx->replayingWal.load()) {
+      return crow::response(409, "Index is replaying WAL, try again later");
     }
 
     {
@@ -586,10 +666,9 @@ int main() {
 
       auto ctx = it->second;
       contexts.erase(it);
-
-      std::filesystem::remove("indices/" + indexName + ".wal");
-      std::filesystem::remove("indices/" + indexName + ".wal.compact");
+      // ctx destructor cancels+joins walReplayThread, then cleans up resources
     }
+
     return crow::response(200, "Index deleted");
   });
 
@@ -629,9 +708,25 @@ int main() {
     nlohmann::json resp;
     resp["indexName"] = indexName;
     resp["resizing"] = ctx->resizing.load();
+
+    bool replaying = ctx->replayingWal.load();
+    resp["replayingWal"] = replaying;
+    if (replaying) {
+      nlohmann::json progress;
+      size_t replayed = ctx->walReplayedCount.load(std::memory_order_relaxed);
+      size_t total = ctx->walReplayTotalAdds.load(std::memory_order_relaxed);
+      progress["replayedAdds"] = replayed;
+      progress["totalAdds"] = total;
+      progress["percentComplete"] = (total > 0) ? static_cast<int>(replayed * 100 / total) : 100;
+      resp["walReplayProgress"] = progress;
+    }
+
     {
       std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
       resp["bufferedWrites"] = ctx->writeBuffer.size();
+      if (!ctx->walReplayError.empty()) {
+        resp["walReplayError"] = ctx->walReplayError;
+      }
     }
     resp["currentElements"] = (size_t)ctx->index->cur_element_count;
     resp["maxElements"] = (size_t)ctx->index->max_elements_;
@@ -654,6 +749,10 @@ int main() {
     auto ctx = getContext(addReq.indexName);
     if (!ctx) {
       return crow::response(404, "Index not found");
+    }
+
+    if (ctx->replayingWal.load()) {
+      return crow::response(409, "Index is replaying WAL, try again later");
     }
 
     if (ctx->wal) {
@@ -758,6 +857,10 @@ int main() {
     auto ctx = getContext(deleteReq.indexName);
     if (!ctx) {
       return crow::response(404, "Index not found");
+    }
+
+    if (ctx->replayingWal.load()) {
+      return crow::response(409, "Index is replaying WAL, try again later");
     }
 
     {

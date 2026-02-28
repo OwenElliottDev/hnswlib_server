@@ -5,7 +5,8 @@ import time
 import numpy as np
 from tqdm import tqdm
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 parser = argparse.ArgumentParser()
@@ -132,8 +133,6 @@ def delete_index():
         buffer.seek(0)
         curl_pool.release(curl)
 
-
-import threading
 
 _doc_id_lock = threading.Lock()
 ADDED_DOCS = 0
