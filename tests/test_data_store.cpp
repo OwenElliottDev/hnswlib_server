@@ -9,7 +9,7 @@ class DataStoreTest : public ::testing::Test {
 protected:
     DataStore dataStore;
 
-    // Utility function to help with setting up filter nodes
+    // utility function to help with setting up filter nodes
     std::shared_ptr<FilterASTNode> makeComparisonFilter(
         const std::string field,
         const std::string op,
@@ -158,4 +158,163 @@ TEST_F(DataStoreTest, TestCountFacets) {
     EXPECT_EQ(facets.counts["name"]["Ava"], 2);
     EXPECT_EQ(std::get<0>(facets.ranges["age"]), 20);
     EXPECT_EQ(std::get<1>(facets.ranges["age"]), 30);
+}
+
+TEST_F(DataStoreTest, SetAndGetArrayFields) {
+    std::vector<std::string> tags = {"python", "cpp", "rust"};
+    std::map<std::string, FieldValue> record = {{"name", "Alice"}, {"tags", tags}};
+    dataStore.set(100, record);
+    auto retrieved = dataStore.get(100);
+
+    EXPECT_EQ(std::get<std::string>(retrieved["name"]), "Alice");
+    auto &retrievedTags = std::get<std::vector<std::string>>(retrieved["tags"]);
+    ASSERT_EQ(retrievedTags.size(), 3);
+    EXPECT_EQ(retrievedTags[0], "python");
+    EXPECT_EQ(retrievedTags[1], "cpp");
+    EXPECT_EQ(retrievedTags[2], "rust");
+}
+
+TEST_F(DataStoreTest, FilterIN) {
+    dataStore.set(101, {{"name", "alice"}, {"age", 25L}});
+    dataStore.set(102, {{"name", "bob"}, {"age", 30L}});
+    dataStore.set(103, {{"name", "charlie"}, {"age", 35L}});
+
+    std::string filterString = R"(name IN ["alice","bob"])";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {101, 102};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, FilterINLong) {
+    dataStore.set(104, {{"name", "alice"}, {"age", 25L}});
+    dataStore.set(105, {{"name", "bob"}, {"age", 30L}});
+    dataStore.set(106, {{"name", "charlie"}, {"age", 35L}});
+
+    std::string filterString = "age IN [25,30]";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {104, 105};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, FilterContainsSubstring) {
+    dataStore.set(107, {{"name", "alice"}, {"age", 25L}});
+    dataStore.set(108, {{"name", "bob"}, {"age", 30L}});
+    dataStore.set(109, {{"name", "charlie"}, {"age", 35L}});
+
+    std::string filterString = R"(name CONTAINS "lic")";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {107};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, FilterContainsArrayElement) {
+    std::vector<std::string> tags1 = {"python", "cpp"};
+    std::vector<std::string> tags2 = {"java", "rust"};
+    std::vector<std::string> tags3 = {"python", "javascript"};
+    dataStore.set(110, {{"name", "alice"}, {"tags", tags1}});
+    dataStore.set(111, {{"name", "bob"}, {"tags", tags2}});
+    dataStore.set(112, {{"name", "charlie"}, {"tags", tags3}});
+
+    std::string filterString = R"(tags CONTAINS "python")";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {110, 112};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, SerializationWithArrayFields) {
+    std::string filename = "datastore_array_test.bin";
+
+    std::vector<std::string> tags = {"python", "cpp"};
+    std::vector<long> scores = {10L, 20L, 30L};
+    dataStore.set(113, {{"name", "Alice"}, {"tags", tags}, {"scores", scores}});
+    dataStore.serialize(filename);
+
+    DataStore newDataStore;
+    newDataStore.deserialize(filename);
+
+    auto retrieved = newDataStore.get(113);
+    EXPECT_EQ(std::get<std::string>(retrieved["name"]), "Alice");
+
+    auto &retrievedTags = std::get<std::vector<std::string>>(retrieved["tags"]);
+    ASSERT_EQ(retrievedTags.size(), 2);
+    EXPECT_EQ(retrievedTags[0], "python");
+    EXPECT_EQ(retrievedTags[1], "cpp");
+
+    auto &retrievedScores = std::get<std::vector<long>>(retrieved["scores"]);
+    ASSERT_EQ(retrievedScores.size(), 3);
+    EXPECT_EQ(retrievedScores[0], 10L);
+    EXPECT_EQ(retrievedScores[1], 20L);
+    EXPECT_EQ(retrievedScores[2], 30L);
+
+    std::string filterString = R"(tags CONTAINS "python")";
+    auto ast = parseFilters(filterString);
+    auto result = newDataStore.filter(ast);
+    std::vector<int> expected = {113};
+    EXPECT_EQ(result.to_vector(), expected);
+
+    std::remove(filename.c_str());
+}
+
+TEST_F(DataStoreTest, RemoveWithArrayFields) {
+    std::vector<std::string> tags = {"python", "cpp"};
+    dataStore.set(114, {{"name", "alice"}, {"tags", tags}});
+    dataStore.set(115, {{"name", "bob"}, {"tags", std::vector<std::string>{"python", "java"}}});
+
+    dataStore.remove(114);
+
+    // alice should no longer match
+    std::string filterString = R"(tags CONTAINS "cpp")";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+    EXPECT_EQ(result.to_vector().size(), 0);
+
+    // but python still matches bob
+    filterString = R"(tags CONTAINS "python")";
+    ast = parseFilters(filterString);
+    result = dataStore.filter(ast);
+    std::vector<int> expected = {115};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, MatchesFilterIN) {
+    dataStore.set(116, {{"name", "alice"}});
+    dataStore.set(117, {{"name", "bob"}});
+
+    std::string filterString = R"(name IN ["alice","bob"])";
+    auto ast = parseFilters(filterString);
+
+    EXPECT_TRUE(dataStore.matchesFilter(116, ast));
+    EXPECT_TRUE(dataStore.matchesFilter(117, ast));
+}
+
+TEST_F(DataStoreTest, MatchesFilterContainsSubstring) {
+    dataStore.set(118, {{"name", "alice"}});
+    dataStore.set(119, {{"name", "bob"}});
+
+    std::string filterString = R"(name CONTAINS "lic")";
+    auto ast = parseFilters(filterString);
+
+    EXPECT_TRUE(dataStore.matchesFilter(118, ast));
+    EXPECT_FALSE(dataStore.matchesFilter(119, ast));
+}
+
+TEST_F(DataStoreTest, MatchesFilterContainsArrayElement) {
+    std::vector<std::string> tags1 = {"python", "cpp"};
+    std::vector<std::string> tags2 = {"java", "rust"};
+    dataStore.set(120, {{"tags", tags1}});
+    dataStore.set(121, {{"tags", tags2}});
+
+    std::string filterString = R"(tags CONTAINS "python")";
+    auto ast = parseFilters(filterString);
+
+    EXPECT_TRUE(dataStore.matchesFilter(120, ast));
+    EXPECT_FALSE(dataStore.matchesFilter(121, ast));
 }

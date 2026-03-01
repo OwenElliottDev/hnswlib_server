@@ -71,6 +71,25 @@ inline void from_json(const nlohmann::json &j, AddDocumentsRequest &req) {
         field_value = json_value.get<double>();
       } else if (json_value.is_string()) {
         field_value = json_value.get<std::string>();
+      } else if (json_value.is_array()) {
+        if (json_value.empty() || json_value[0].is_string()) {
+          std::vector<std::string> arr;
+          for (const auto &el : json_value)
+            arr.push_back(el.get<std::string>());
+          field_value = arr;
+        } else if (json_value[0].is_number_integer()) {
+          std::vector<long> arr;
+          for (const auto &el : json_value)
+            arr.push_back(el.get<long>());
+          field_value = arr;
+        } else if (json_value[0].is_number_float()) {
+          std::vector<double> arr;
+          for (const auto &el : json_value)
+            arr.push_back(el.get<double>());
+          field_value = arr;
+        } else {
+          throw std::invalid_argument("Unsupported array element type in metadatas");
+        }
       } else {
         throw std::invalid_argument("Unsupported type in metadatas");
       }
@@ -93,6 +112,25 @@ inline void from_json(const nlohmann::json &j, FieldValue &value) {
     value = j.get<double>();
   } else if (j.is_string()) {
     value = j.get<std::string>();
+  } else if (j.is_array()) {
+    if (j.empty() || j[0].is_string()) {
+      std::vector<std::string> arr;
+      for (const auto &el : j)
+        arr.push_back(el.get<std::string>());
+      value = arr;
+    } else if (j[0].is_number_integer()) {
+      std::vector<long> arr;
+      for (const auto &el : j)
+        arr.push_back(el.get<long>());
+      value = arr;
+    } else if (j[0].is_number_float()) {
+      std::vector<double> arr;
+      for (const auto &el : j)
+        arr.push_back(el.get<double>());
+      value = arr;
+    } else {
+      throw std::invalid_argument("Unsupported array element type for FieldValue");
+    }
   } else {
     throw std::invalid_argument("Unsupported type for FieldValue");
   }

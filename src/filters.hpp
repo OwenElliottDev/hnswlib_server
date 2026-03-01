@@ -8,7 +8,7 @@
 
 struct Filter {
   std::string field;
-  std::string type; // Comparison type: =, !=, >, <, >=, <=
+  std::string type; // Comparison type: =, !=, >, <, >=, <=, IN, CONTAINS
   FieldValue value;
 };
 
@@ -40,6 +40,6 @@ std::shared_ptr<FilterASTNode> parseTerm(int &index, const std::vector<Token> &t
 std::shared_ptr<FilterASTNode> parseFactor(int &index, const std::vector<Token> &tokens);
 std::shared_ptr<FilterASTNode> parseExpression(int &index, const std::vector<Token> &tokens);
 std::shared_ptr<FilterASTNode> parseFilters(const std::string &filterString);
-FieldValue convertValue(const std::string &value, const std::string &type);
+FieldValue convertType(const std::string &value, const std::string &type);
 
 #endif // FILTERS_HPP
