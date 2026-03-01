@@ -4,6 +4,18 @@ This is a lightweight HTTP server that wraps the HNSWLib Library. It allows you 
 
 A bunch of optimisations are applied for compiling and static linking is also used to make it self-contained. The binary is about 3MB and we can package it into a Docker container with a scratch base image to make a portable version that is 4.88MB.
 
+## Quick Start
+
+```bash
+docker run -p 8685:8685 -v ./indices:/indices owenelliottdev/hnswlib_server:latest
+```
+
+Or using [docker-compose.yml](docker-compose.yml):
+
+```bash
+docker compose up
+```
+
 ## Features
 
 ### Filtering
@@ -31,11 +43,23 @@ You can then filter by metadata like so:
 }
 ```
 
+Metadata values can also be arrays:
+
+```json
+{
+    "metadatas": [{"name": "alice", "tags": ["python", "cpp"]}, {"name": "bob", "tags": ["java"]}]
+}
+```
+
 Filtering supports grouping with parentheses, the following operators are supported:
 
 Comparison operators: `=`, `!=`, `>`, `<`, `>=`, `<=`.
 
 Logical operators: `AND`, `OR`, `NOT`.
+
+`IN` - checks if a field value matches any value in an array: `name IN ["alice", "bob"]`.
+
+`CONTAINS` - substring match on string fields: `name CONTAINS "lic"`. Element membership on array fields: `tags CONTAINS "python"`.
 
 ### Vector Types
 
@@ -105,7 +129,7 @@ Run the server by executing the binary from the `build` directory:
 ./bin/server
 ```
 
-## Docker
+## Docker Build
 
 ### Building
 
