@@ -1,0 +1,7 @@
+services:
+  hnswlib_server:
+    image: owenelliottdev/hnswlib_server:latest
+    ports:
+      - "8685:8685"
+    volumes:
+      - ./indices:/indices
