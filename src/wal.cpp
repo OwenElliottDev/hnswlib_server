@@ -86,6 +86,35 @@ static void serializeFieldValueToWal(std::vector<uint8_t> &buf, const FieldValue
     pushBytes(buf, s.data(), s.size());
     break;
   }
+  case 3: { // vector<long>
+    const auto &arr = std::get<std::vector<long>>(value);
+    uint32_t count = static_cast<uint32_t>(arr.size());
+    pushU32(buf, count);
+    for (const auto &v : arr) {
+      pushBytes(buf, &v, sizeof(v));
+    }
+    break;
+  }
+  case 4: { // vector<double>
+    const auto &arr = std::get<std::vector<double>>(value);
+    uint32_t count = static_cast<uint32_t>(arr.size());
+    pushU32(buf, count);
+    for (const auto &v : arr) {
+      pushBytes(buf, &v, sizeof(v));
+    }
+    break;
+  }
+  case 5: { // vector<string>
+    const auto &arr = std::get<std::vector<std::string>>(value);
+    uint32_t count = static_cast<uint32_t>(arr.size());
+    pushU32(buf, count);
+    for (const auto &s : arr) {
+      uint32_t len = static_cast<uint32_t>(s.size());
+      pushU32(buf, len);
+      pushBytes(buf, s.data(), s.size());
+    }
+    break;
+  }
   }
 }
 
@@ -110,6 +139,34 @@ static FieldValue deserializeFieldValueFromWal(const uint8_t *data, size_t &off)
     std::string s(reinterpret_cast<const char *>(data + off), len);
     off += len;
     return s;
+  }
+  case 3: { // vector<long>
+    uint32_t count = readU32(data, off);
+    std::vector<long> arr(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      std::memcpy(&arr[i], data + off, sizeof(long));
+      off += sizeof(long);
+    }
+    return arr;
+  }
+  case 4: { // vector<double>
+    uint32_t count = readU32(data, off);
+    std::vector<double> arr(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      std::memcpy(&arr[i], data + off, sizeof(double));
+      off += sizeof(double);
+    }
+    return arr;
+  }
+  case 5: { // vector<string>
+    uint32_t count = readU32(data, off);
+    std::vector<std::string> arr(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      uint32_t len = readU32(data, off);
+      arr[i] = std::string(reinterpret_cast<const char *>(data + off), len);
+      off += len;
+    }
+    return arr;
   }
   default:
     throw std::runtime_error("Unknown variant index in WAL entry");

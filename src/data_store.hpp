@@ -13,15 +13,15 @@
 #include "field_value.hpp"
 #include "filters.hpp"
 
-// Type for data stores data
+// data store KV type
 using KeyValueStore = std::unordered_map<int, std::map<std::string, FieldValue>>;
 
-// Comparator for variants
+// special comparator for FieldValue variants
 struct VariantComparator {
   bool operator()(const FieldValue &lhs, const FieldValue &rhs) const;
 };
 
-// Alias for field index structure
+// alias for field index structure
 using FieldIndex = std::unordered_map<std::string, std::map<FieldValue, std::vector<int>, VariantComparator>>;
 
 struct Facets {
@@ -39,6 +39,10 @@ private:
 
   template <typename T>
   void filterByType(DynamicBitset &result, const std::string &field, const std::string &type, const FieldValue &value);
+
+  template <typename T> void filterIN(DynamicBitset &result, const std::string &field, const std::vector<T> &values);
+
+  void filterCONTAINS(DynamicBitset &result, const std::string &field, const FieldValue &value);
 
 public:
   KeyValueStore data;

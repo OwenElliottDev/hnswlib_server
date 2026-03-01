@@ -2,6 +2,20 @@
 #include <regex>
 #include <sstream>
 
+const std::regex LPAREN(R"(\()");
+const std::regex RPAREN(R"(\))");
+const std::regex STRING("\"([^\"]*)\"");
+const std::regex LONG(R"(\d+)");
+const std::regex DOUBLE(R"(\d+\.\d+)");
+const std::regex ARRAY_STRING(R"xxx(\["([^"]*)"(?:,\s*"([^"]*)")*\])xxx");
+const std::regex ARRAY_LONG(R"(\[(\d+)(?:,\s*(\d+))*\])");
+const std::regex ARRAY_DOUBLE(R"(\[(\d+\.\d+)(?:,\s*(\d+\.\d+))*\])");
+const std::regex ARRAY_ELEMENT(R"xxx("([^"]*)"|(\d+\.\d+)|(\d+))xxx");
+const std::regex COMPARATOR(R"(!=|>=|<=|=|>|<|IN|CONTAINS)");
+const std::regex BOOLEAN_OP(R"(AND|OR|NOT)");
+const std::regex IDENTIFIER(R"(\w+)");
+const std::regex WHITESPACE(R"(\s+)");
+
 FilterASTNode::FilterASTNode(Filter filter) : type(NodeType::Comparison), filter(filter) {}
 
 FilterASTNode::FilterASTNode(BooleanOp op, std::shared_ptr<FilterASTNode> left, std::shared_ptr<FilterASTNode> right)
@@ -19,6 +33,30 @@ std::string FilterASTNode::toString() {
       value = std::to_string(std::get<double>(filter.value));
     } else if (std::holds_alternative<std::string>(filter.value)) {
       value = std::get<std::string>(filter.value);
+    } else if (std::holds_alternative<std::vector<long>>(filter.value)) {
+      value = "[";
+      for (const auto &v : std::get<std::vector<long>>(filter.value)) {
+        if (value.size() > 1)
+          value += ", ";
+        value += std::to_string(v);
+      }
+      value += "]";
+    } else if (std::holds_alternative<std::vector<double>>(filter.value)) {
+      value = "[";
+      for (const auto &v : std::get<std::vector<double>>(filter.value)) {
+        if (value.size() > 1)
+          value += ", ";
+        value += std::to_string(v);
+      }
+      value += "]";
+    } else if (std::holds_alternative<std::vector<std::string>>(filter.value)) {
+      value = "[";
+      for (const auto &v : std::get<std::vector<std::string>>(filter.value)) {
+        if (value.size() > 1)
+          value += ", ";
+        value += "\"" + v + "\"";
+      }
+      value += "]";
     }
     return filter.field + " " + filter.type + " " + value;
   case NodeType::BooleanOp:
@@ -29,6 +67,23 @@ std::string FilterASTNode::toString() {
   return "Invalid node type";
 }
 
+std::vector<std::string> parseArray(const std::string &input) {
+  std::vector<std::string> elements;
+  auto begin = std::sregex_iterator(input.begin(), input.end(), ARRAY_ELEMENT);
+  auto end = std::sregex_iterator();
+
+  for (auto it = begin; it != end; ++it) {
+    const std::smatch &match = *it;
+    if (match[1].matched)
+      elements.push_back(match[1].str());
+    else if (match[2].matched)
+      elements.push_back(match[2].str());
+    else if (match[3].matched)
+      elements.push_back(match[3].str());
+  }
+  return elements;
+}
+
 FieldValue convertType(const std::string &value, const std::string &type) {
   if (type == "STRING") {
     return value;
@@ -36,38 +91,75 @@ FieldValue convertType(const std::string &value, const std::string &type) {
     return std::stol(value);
   } else if (type == "DOUBLE") {
     return std::stod(value);
+  } else if (type == "ARRAY_LONG" || type == "ARRAY_DOUBLE" || type == "ARRAY_STRING") {
+    auto vector_evelemts = parseArray(value);
+
+    if (type == "ARRAY_LONG") {
+      std::vector<long> arr;
+      for (auto el : vector_evelemts) {
+        arr.push_back(std::stol(el));
+      }
+      return arr;
+    } else if (type == "ARRAY_DOUBLE") {
+      std::vector<double> arr;
+      for (auto el : vector_evelemts) {
+        arr.push_back(std::stod(el));
+      }
+      return arr;
+    } else if (type == "ARRAY_STRING") {
+      std::vector<std::string> arr;
+      for (auto el : vector_evelemts) {
+        arr.push_back(el);
+      }
+      return arr;
+    }
   } else {
     throw std::runtime_error("Unsupported type: " + type);
   }
 }
 
-const std::regex LPAREN(R"(\()");
-const std::regex RPAREN(R"(\))");
-const std::regex STRING("\"([^\"]*)\"");
-const std::regex LONG(R"(\d+)");
-const std::regex DOUBLE(R"(\d+\.\d+)");
-const std::regex COMPARATOR(R"(!=|>=|<=|=|>|<)");
-const std::regex BOOLEAN_OP(R"(AND|OR|NOT)");
-const std::regex IDENTIFIER(R"(\w+)");
-const std::regex WHITESPACE(R"(\s+)");
-
 std::vector<std::string> splitWhitespace(const std::string &str) {
   std::vector<std::string> tokens;
-  std::istringstream stream(str);
-  std::string token;
-  while (stream >> token) {
-    std::smatch match;
-    if (std::regex_search(token, match, LPAREN)) {
-      tokens.push_back(match[0]);
-      token.erase(0, 1);
-      tokens.push_back(token);
-    } else if (std::regex_search(token, match, RPAREN)) {
-      tokens.push_back(token.substr(0, token.size() - 1));
-      tokens.push_back(match[0]);
+  std::string current;
+  int bracketDepth = 0;
+
+  for (size_t i = 0; i < str.size(); ++i) {
+    char c = str[i];
+
+    if (c == '[') {
+      bracketDepth++;
+      current += c;
+    } else if (c == ']') {
+      bracketDepth--;
+      current += c;
+    } else if (bracketDepth > 0) {
+      current += c;
+    } else if (std::isspace(c)) {
+      if (!current.empty()) {
+        tokens.push_back(current);
+        current.clear();
+      }
+    } else if (c == '(') {
+      if (!current.empty()) {
+        tokens.push_back(current);
+        current.clear();
+      }
+      tokens.push_back("(");
+    } else if (c == ')') {
+      if (!current.empty()) {
+        tokens.push_back(current);
+        current.clear();
+      }
+      tokens.push_back(")");
     } else {
-      tokens.push_back(token);
+      current += c;
     }
   }
+
+  if (!current.empty()) {
+    tokens.push_back(current);
+  }
+
   return tokens;
 }
 
@@ -91,6 +183,12 @@ std::vector<Token> tokenize(const std::string &filterString) {
       tokens.push_back({word, "LONG"});
     } else if (std::regex_match(word, match, STRING)) {
       tokens.push_back({match[1], "STRING"});
+    } else if (std::regex_match(word, match, ARRAY_STRING)) {
+      tokens.push_back({word, "ARRAY_STRING"});
+    } else if (std::regex_match(word, match, ARRAY_LONG)) {
+      tokens.push_back({word, "ARRAY_LONG"});
+    } else if (std::regex_match(word, match, ARRAY_DOUBLE)) {
+      tokens.push_back({word, "ARRAY_DOUBLE"});
     } else if (std::regex_match(word, match, IDENTIFIER)) {
       tokens.push_back({word, "IDENTIFIER"});
     } else {

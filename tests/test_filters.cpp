@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <string>
-#include "filters.hpp"  // Adjust path if necessary
+#include "filters.hpp"
 
 TEST(FiltersTest, TestBasicTokenize) {
     std::string filterString = "age = 30 AND name = \"Alice\"";
@@ -109,6 +109,68 @@ TEST(FilterTest, TestASTConstructionWithOr) {
     ASSERT_EQ(ast->right->filter.field, "name");
     ASSERT_EQ(ast->right->filter.type, "=");
     ASSERT_EQ(std::get<std::string>(ast->right->filter.value), "Alice");
+}
+
+TEST(FilterTest, TestTokenizeArrayStringLiteral) {
+    std::string filterString = R"(name IN ["alice","bob"])";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[0].value, "name");
+    ASSERT_EQ(tokens[0].type, "IDENTIFIER");
+    ASSERT_EQ(tokens[1].value, "IN");
+    ASSERT_EQ(tokens[1].type, "COMPARATOR");
+    ASSERT_EQ(tokens[2].type, "ARRAY_STRING");
+    ASSERT_EQ(tokens[2].value, R"(["alice","bob"])");
+}
+
+TEST(FilterTest, TestTokenizeArrayWithSpaces) {
+    std::string filterString = R"(name IN ["alice", "bob", "charlie"])";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[2].type, "ARRAY_STRING");
+    ASSERT_EQ(tokens[2].value, R"(["alice", "bob", "charlie"])");
+}
+
+TEST(FilterTest, TestTokenizeContains) {
+    std::string filterString = R"(name CONTAINS "lic")";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[0].value, "name");
+    ASSERT_EQ(tokens[0].type, "IDENTIFIER");
+    ASSERT_EQ(tokens[1].value, "CONTAINS");
+    ASSERT_EQ(tokens[1].type, "COMPARATOR");
+    ASSERT_EQ(tokens[2].value, "lic");
+    ASSERT_EQ(tokens[2].type, "STRING");
+}
+
+TEST(FilterTest, TestASTINConstruction) {
+    std::string filterString = R"(name IN ["alice","bob"])";
+    auto ast = parseFilters(filterString);
+
+    ASSERT_EQ(ast->type, NodeType::Comparison);
+    ASSERT_EQ(ast->filter.field, "name");
+    ASSERT_EQ(ast->filter.type, "IN");
+    auto &arr = std::get<std::vector<std::string>>(ast->filter.value);
+    ASSERT_EQ(arr.size(), 2);
+    ASSERT_EQ(arr[0], "alice");
+    ASSERT_EQ(arr[1], "bob");
+}
+
+TEST(FilterTest, TestASTContainsConstruction) {
+    std::string filterString = R"(name CONTAINS "lic")";
+    auto ast = parseFilters(filterString);
+
+    ASSERT_EQ(ast->type, NodeType::Comparison);
+    ASSERT_EQ(ast->filter.field, "name");
+    ASSERT_EQ(ast->filter.type, "CONTAINS");
+    ASSERT_EQ(std::get<std::string>(ast->filter.value), "lic");
+}
+
+TEST(FilterTest, TestTokenizeArrayLong) {
+    std::string filterString = "age IN [25,30,35]";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[2].type, "ARRAY_LONG");
 }
 
 TEST(FilterTest, TestASTConstructionWithGroup) {
