@@ -173,6 +173,71 @@ TEST(FilterTest, TestTokenizeArrayLong) {
     ASSERT_EQ(tokens[2].type, "ARRAY_LONG");
 }
 
+TEST(FilterTest, TestTokenizeStringWithSpaces) {
+    std::string filterString = R"(city = "New York")";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[0].value, "city");
+    ASSERT_EQ(tokens[0].type, "IDENTIFIER");
+    ASSERT_EQ(tokens[1].value, "=");
+    ASSERT_EQ(tokens[1].type, "COMPARATOR");
+    ASSERT_EQ(tokens[2].value, "New York");
+    ASSERT_EQ(tokens[2].type, "STRING");
+}
+
+TEST(FilterTest, TestASTStringWithSpaces) {
+    std::string filterString = R"(city = "San Francisco")";
+    auto ast = parseFilters(filterString);
+
+    ASSERT_EQ(ast->type, NodeType::Comparison);
+    ASSERT_EQ(ast->filter.field, "city");
+    ASSERT_EQ(ast->filter.type, "=");
+    ASSERT_EQ(std::get<std::string>(ast->filter.value), "San Francisco");
+}
+
+TEST(FilterTest, TestTokenizeContainsStringWithSpaces) {
+    std::string filterString = R"(name CONTAINS "New York")";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[0].value, "name");
+    ASSERT_EQ(tokens[1].value, "CONTAINS");
+    ASSERT_EQ(tokens[1].type, "COMPARATOR");
+    ASSERT_EQ(tokens[2].value, "New York");
+    ASSERT_EQ(tokens[2].type, "STRING");
+}
+
+TEST(FilterTest, TestTokenizeINArrayWithSpaces) {
+    std::string filterString = R"(city IN ["New York","San Francisco"])";
+    auto tokens = tokenize(filterString);
+    ASSERT_EQ(tokens.size(), 3);
+    ASSERT_EQ(tokens[0].value, "city");
+    ASSERT_EQ(tokens[1].value, "IN");
+    ASSERT_EQ(tokens[2].type, "ARRAY_STRING");
+}
+
+TEST(FilterTest, TestASTINWithSpaces) {
+    std::string filterString = R"(city IN ["New York","San Francisco"])";
+    auto ast = parseFilters(filterString);
+
+    ASSERT_EQ(ast->type, NodeType::Comparison);
+    ASSERT_EQ(ast->filter.field, "city");
+    ASSERT_EQ(ast->filter.type, "IN");
+    auto &arr = std::get<std::vector<std::string>>(ast->filter.value);
+    ASSERT_EQ(arr.size(), 2);
+    ASSERT_EQ(arr[0], "New York");
+    ASSERT_EQ(arr[1], "San Francisco");
+}
+
+TEST(FilterTest, TestASTStringWithSpacesAndBooleanOp) {
+    std::string filterString = R"(city = "New York" AND name = "Alice Smith")";
+    auto ast = parseFilters(filterString);
+
+    ASSERT_EQ(ast->type, NodeType::BooleanOp);
+    ASSERT_EQ(ast->booleanOp, BooleanOp::And);
+    ASSERT_EQ(std::get<std::string>(ast->left->filter.value), "New York");
+    ASSERT_EQ(std::get<std::string>(ast->right->filter.value), "Alice Smith");
+}
+
 TEST(FilterTest, TestASTConstructionWithGroup) {
     std::string filterString = "(age = 30 OR age = 31) AND name = \"Alice\"";
     auto ast = parseFilters(filterString);

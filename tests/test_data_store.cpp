@@ -306,6 +306,65 @@ TEST_F(DataStoreTest, MatchesFilterContainsSubstring) {
     EXPECT_FALSE(dataStore.matchesFilter(119, ast));
 }
 
+TEST_F(DataStoreTest, SetAndGetStringWithSpaces) {
+    std::map<std::string, FieldValue> record = {{"city", std::string("New York")}, {"age", 30L}};
+    dataStore.set(200, record);
+    auto retrieved = dataStore.get(200);
+
+    EXPECT_EQ(std::get<std::string>(retrieved["city"]), "New York");
+    EXPECT_EQ(std::get<long>(retrieved["age"]), 30L);
+}
+
+TEST_F(DataStoreTest, FilterEqualStringWithSpaces) {
+    dataStore.set(201, {{"city", std::string("New York")}, {"age", 25L}});
+    dataStore.set(202, {{"city", std::string("San Francisco")}, {"age", 30L}});
+    dataStore.set(203, {{"city", std::string("New York")}, {"age", 35L}});
+
+    std::string filterString = R"(city = "New York")";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {201, 203};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, FilterContainsSubstringWithSpaces) {
+    dataStore.set(204, {{"city", std::string("New York")}});
+    dataStore.set(205, {{"city", std::string("New Orleans")}});
+    dataStore.set(206, {{"city", std::string("Boston")}});
+
+    std::string filterString = R"(city CONTAINS "New ")";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {204, 205};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, FilterINStringWithSpaces) {
+    dataStore.set(207, {{"city", std::string("New York")}});
+    dataStore.set(208, {{"city", std::string("San Francisco")}});
+    dataStore.set(209, {{"city", std::string("Boston")}});
+
+    std::string filterString = R"(city IN ["New York","San Francisco"])";
+    auto ast = parseFilters(filterString);
+    auto result = dataStore.filter(ast);
+
+    std::vector<int> expected = {207, 208};
+    EXPECT_EQ(result.to_vector(), expected);
+}
+
+TEST_F(DataStoreTest, MatchesFilterStringWithSpaces) {
+    dataStore.set(210, {{"city", std::string("New York")}});
+    dataStore.set(211, {{"city", std::string("Boston")}});
+
+    std::string filterString = R"(city = "New York")";
+    auto ast = parseFilters(filterString);
+
+    EXPECT_TRUE(dataStore.matchesFilter(210, ast));
+    EXPECT_FALSE(dataStore.matchesFilter(211, ast));
+}
+
 TEST_F(DataStoreTest, MatchesFilterContainsArrayElement) {
     std::vector<std::string> tags1 = {"python", "cpp"};
     std::vector<std::string> tags2 = {"java", "rust"};
