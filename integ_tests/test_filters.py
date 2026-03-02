@@ -151,3 +151,92 @@ class TestFilterOperators:
     def test_filter_matches_no_docs(self):
         results = self._search("age > 100")
         assert len(results["hits"]) == 0
+
+
+SPACES_INDEX = "filter_spaces_test"
+SPACES_DOCS = [
+    {
+        "id": 0,
+        "vector": [6, 0, 0, 0],
+        "meta": {"name": "Alice Smith", "city": "New York", "age": 25},
+    },
+    {
+        "id": 1,
+        "vector": [5, 0, 0, 0],
+        "meta": {"name": "Bob Jones", "city": "San Francisco", "age": 30},
+    },
+    {
+        "id": 2,
+        "vector": [4, 0, 0, 0],
+        "meta": {"name": "Carol White", "city": "New York", "age": 35},
+    },
+    {
+        "id": 3,
+        "vector": [3, 0, 0, 0],
+        "meta": {"name": "Dave Brown", "city": "Los Angeles", "age": 40},
+    },
+    {
+        "id": 4,
+        "vector": [2, 0, 0, 0],
+        "meta": {"name": "Eve Davis", "city": "San Francisco", "age": 22},
+    },
+]
+
+
+class TestFilterStringsWithSpaces:
+    @classmethod
+    def setup_class(cls):
+        create_index(SPACES_INDEX)
+        res = requests.post(
+            f"{BASE_URL}/add_documents",
+            json={
+                "indexName": SPACES_INDEX,
+                "ids": [d["id"] for d in SPACES_DOCS],
+                "vectors": [d["vector"] for d in SPACES_DOCS],
+                "metadatas": [d["meta"] for d in SPACES_DOCS],
+            },
+        )
+        assert res.status_code == 201
+
+    def _search(self, filter_str, k=5):
+        res = requests.post(
+            f"{BASE_URL}/search",
+            json={
+                "indexName": SPACES_INDEX,
+                "queryVector": [1, 0, 0, 0],
+                "k": k,
+                "efSearch": 200,
+                "filter": filter_str,
+                "returnMetadata": True,
+            },
+        )
+        assert res.status_code == 200, f"Search failed: {res.text}"
+        return res.json()
+
+    def test_filter_equal_string_with_spaces(self):
+        results = self._search('city = "New York"')
+        assert set(results["hits"]) == {0, 2}
+
+    def test_filter_not_equal_string_with_spaces(self):
+        results = self._search('city != "New York"')
+        assert set(results["hits"]) == {1, 3, 4}
+
+    def test_filter_equal_name_with_spaces(self):
+        results = self._search('name = "Alice Smith"')
+        assert set(results["hits"]) == {0}
+
+    def test_filter_string_with_spaces_and_boolean(self):
+        results = self._search('city = "New York" AND age > 30')
+        assert set(results["hits"]) == {2}
+
+    def test_filter_string_with_spaces_or(self):
+        results = self._search('city = "New York" OR city = "Los Angeles"')
+        assert set(results["hits"]) == {0, 2, 3}
+
+    def test_filter_string_with_spaces_in_operator(self):
+        results = self._search('city IN ["New York","San Francisco"]')
+        assert set(results["hits"]) == {0, 1, 2, 4}
+
+    def test_filter_string_with_spaces_parenthesized(self):
+        results = self._search('(city = "New York" OR city = "San Francisco") AND age >= 30')
+        assert set(results["hits"]) == {1, 2}

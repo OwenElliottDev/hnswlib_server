@@ -122,11 +122,17 @@ std::vector<std::string> splitWhitespace(const std::string &str) {
   std::vector<std::string> tokens;
   std::string current;
   int bracketDepth = 0;
+  bool inQuotes = false;
 
   for (size_t i = 0; i < str.size(); ++i) {
     char c = str[i];
 
-    if (c == '[') {
+    if (c == '"') {
+      inQuotes = !inQuotes;
+      current += c;
+    } else if (inQuotes) {
+      current += c;
+    } else if (c == '[') {
       bracketDepth++;
       current += c;
     } else if (c == ']') {
