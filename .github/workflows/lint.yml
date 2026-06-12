@@ -1,0 +1,28 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Env
+        run: uv sync --dev
+
+      - name: Check C++ formatting (src/)
+        run: uv run clang-format --dry-run --Werror src/*.cpp src/*.hpp
+      
+      - name: Check C++ formatting (src/)
+        run: uv run ruff check
+

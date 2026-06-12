@@ -28,7 +28,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=2000)
     args = parser.parse_args()
 
-    print(f"Loading {'all' if args.limit is None else 'top ' + str(args.limit)} GloVe {args.dim}d vectors ...")
+    print(
+        f"Loading {'all' if args.limit is None else 'top ' + str(args.limit)} GloVe {args.dim}d vectors ..."
+    )
     words, vectors = load_vectors(args.dim, args.limit)
     print(f"  {len(words)} words, dim={vectors.shape[1]}")
 

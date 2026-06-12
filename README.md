@@ -175,6 +175,16 @@ cmake ..
 make
 ```
 
+## Formatting
+
+`src/` is formatted with clang-format (`.clang-format`: LLVM, 140 cols); CI checks it. Globs are unquoted so the shell expands them.
+
+Format in place:
+
+```bash
+uvx clang-format@20.1.7 -i src/*.cpp src/*.hpp
+```
+
 ## Running
 
 Run the server by executing the binary from the `build` directory:

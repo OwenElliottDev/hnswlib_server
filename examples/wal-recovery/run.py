@@ -23,7 +23,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -57,8 +56,14 @@ class DockerServer:
     def __init__(self, workdir):
         self.indices = os.path.join(workdir, "indices")
         os.makedirs(self.indices, exist_ok=True)
-        if subprocess.run(["docker", "image", "inspect", IMAGE],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        if (
+            subprocess.run(
+                ["docker", "image", "inspect", IMAGE],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            != 0
+        ):
             raise SystemExit(
                 f"docker image '{IMAGE}' not found.\n"
                 "Build it from the repo root:  docker build -t hnswlib_server:local .\n"
@@ -66,19 +71,44 @@ class DockerServer:
             )
 
     def start(self):
-        subprocess.run(["docker", "rm", "-f", CONTAINER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(
-            ["docker", "run", "-d", "--name", CONTAINER, "-p", "8685:8685",
-             "-v", f"{self.indices}:/indices", "-e", "WAL_FSYNC_INTERVAL_MS=250", IMAGE],
-            check=True, stdout=subprocess.DEVNULL,
+            ["docker", "rm", "-f", CONTAINER],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                CONTAINER,
+                "-p",
+                "8685:8685",
+                "-v",
+                f"{self.indices}:/indices",
+                "-e",
+                "WAL_FSYNC_INTERVAL_MS=250",
+                IMAGE,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
         )
         wait_healthy()
 
     def kill(self):
-        subprocess.run(["docker", "kill", CONTAINER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["docker", "kill", CONTAINER],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def cleanup(self):
-        subprocess.run(["docker", "rm", "-f", CONTAINER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["docker", "rm", "-f", CONTAINER],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 class BinaryServer:
@@ -90,12 +120,16 @@ class BinaryServer:
         self.logfile = os.path.join(workdir, "server.log")
         self.proc = None
         if not os.path.exists(self.binary):
-            raise SystemExit(f"binary not found at {self.binary}; build it or set HNSW_SERVER_BIN")
+            raise SystemExit(
+                f"binary not found at {self.binary}; build it or set HNSW_SERVER_BIN"
+            )
 
     def start(self):
         env = dict(os.environ, WAL_FSYNC_INTERVAL_MS="250")
         log = open(self.logfile, "a")
-        self.proc = subprocess.Popen([self.binary], cwd=self.workdir, env=env, stdout=log, stderr=log)
+        self.proc = subprocess.Popen(
+            [self.binary], cwd=self.workdir, env=env, stdout=log, stderr=log
+        )
         wait_healthy()
 
     def kill(self):
@@ -115,7 +149,13 @@ def status():
 def populate(num_docs, dim, batch_size):
     requests.post(
         f"{SERVER}/create_index",
-        json={"indexName": INDEX, "dimension": dim, "spaceType": "IP", "efConstruction": 200, "M": 16},
+        json={
+            "indexName": INDEX,
+            "dimension": dim,
+            "spaceType": "IP",
+            "efConstruction": 200,
+            "M": 16,
+        },
     ).raise_for_status()
 
     rng = np.random.default_rng(42)
@@ -128,7 +168,10 @@ def populate(num_docs, dim, batch_size):
 
     def send(batch):
         ids, vecs = batch
-        requests.post(f"{SERVER}/add_documents", json={"indexName": INDEX, "ids": ids, "vectors": vecs}).raise_for_status()
+        requests.post(
+            f"{SERVER}/add_documents",
+            json={"indexName": INDEX, "ids": ids, "vectors": vecs},
+        ).raise_for_status()
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=16) as ex:
@@ -162,8 +205,16 @@ class SearchLoad:
             qv = rng.standard_normal(self.dim, dtype=np.float32)
             qv /= np.linalg.norm(qv)
             try:
-                r = sess.post(f"{SERVER}/search",
-                              json={"indexName": INDEX, "queryVector": qv.tolist(), "k": 10, "efSearch": 64}, timeout=5)
+                r = sess.post(
+                    f"{SERVER}/search",
+                    json={
+                        "indexName": INDEX,
+                        "queryVector": qv.tolist(),
+                        "k": 10,
+                        "efSearch": 64,
+                    },
+                    timeout=5,
+                )
                 # availability metric: a 200 is a success even if the still-filling
                 # index returns few/no hits. Only transport/HTTP failures are errors.
                 with self.lock:
@@ -194,7 +245,9 @@ class SearchLoad:
 def recover_and_serve(dim, expected):
     t0 = time.perf_counter()
     requests.post(f"{SERVER}/load_index", json={"indexName": INDEX}).raise_for_status()
-    print(f"  /load_index returned in {(time.perf_counter() - t0) * 1000:.0f}ms (replay running in background)")
+    print(
+        f"  /load_index returned in {(time.perf_counter() - t0) * 1000:.0f}ms (replay running in background)"
+    )
 
     load = SearchLoad(dim)
     load.start()
@@ -203,7 +256,9 @@ def recover_and_serve(dim, expected):
 
     while True:
         st = status()
-        pct = st.get("walReplayProgress", {}).get("percentComplete", 100 if not st.get("replayingWal") else 0)
+        pct = st.get("walReplayProgress", {}).get(
+            "percentComplete", 100 if not st.get("replayingWal") else 0
+        )
         ok, err = load.snapshot()
         print(f"  {pct:>7}%  {st['currentElements']:>10,}  {ok:>12,}  {err:>7}")
         if not st.get("replayingWal"):
@@ -231,7 +286,9 @@ def main():
     parser.add_argument("--num-docs", type=int, default=150_000)
     parser.add_argument("--dim", type=int, default=64)
     parser.add_argument("--batch-size", type=int, default=2000)
-    parser.add_argument("--binary", action="store_true", help="run ./build/bin/server instead of Docker")
+    parser.add_argument(
+        "--binary", action="store_true", help="run ./build/bin/server instead of Docker"
+    )
     parser.add_argument("--keep-workdir", action="store_true")
     args = parser.parse_args()
 

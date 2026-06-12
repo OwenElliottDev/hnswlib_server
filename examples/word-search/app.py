@@ -68,7 +68,11 @@ def search():
     k = int(body.get("k", 15))
     vec, used, missing = build_query_vector(expr)
     if vec is None:
-        msg = f"none of those words are in the vocabulary: {missing}" if missing else "empty query"
+        msg = (
+            f"none of those words are in the vocabulary: {missing}"
+            if missing
+            else "empty query"
+        )
         return jsonify({"error": msg, "missing": missing}), 400
 
     # ask for extra results so we can drop the input words themselves
@@ -97,7 +101,15 @@ def search():
         hits.append({"word": word, "similarity": round(1.0 - dist, 4)})
         if len(hits) >= k:
             break
-    return jsonify({"query": expr, "used": used, "missing": missing, "server_ms": server_ms, "results": hits})
+    return jsonify(
+        {
+            "query": expr,
+            "used": used,
+            "missing": missing,
+            "server_ms": server_ms,
+            "results": hits,
+        }
+    )
 
 
 def main():
@@ -112,7 +124,9 @@ def main():
     parser.add_argument("--port", type=int, default=5001)
     args = parser.parse_args()
 
-    print(f"Loading vocabulary ({'all' if args.limit is None else 'top ' + str(args.limit)} GloVe {args.dim}d words) ...")
+    print(
+        f"Loading vocabulary ({'all' if args.limit is None else 'top ' + str(args.limit)} GloVe {args.dim}d words) ..."
+    )
     global WORDS, WORD_TO_VEC, DIM
     WORDS, vectors = load_vectors(args.dim, args.limit)
     WORD_TO_VEC = {w: vectors[i] for i, w in enumerate(WORDS)}

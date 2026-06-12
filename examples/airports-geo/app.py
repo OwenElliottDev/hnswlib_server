@@ -81,18 +81,20 @@ def search():
     data = res.json()
     results = []
     for dist, meta in zip(data["distances"], data.get("metadatas", [])):
-        results.append({
-            "name": meta.get("name", ""),
-            "type": meta.get("type", ""),
-            "country": meta.get("iso_country", ""),
-            "municipality": meta.get("municipality", ""),
-            "ident": meta.get("ident", ""),
-            "iata": meta.get("iata", ""),
-            "elevation_ft": meta.get("elevation_ft"),
-            "lat": meta.get("lat"),
-            "lon": meta.get("lon"),
-            "distance_km": round(dist, 1),
-        })
+        results.append(
+            {
+                "name": meta.get("name", ""),
+                "type": meta.get("type", ""),
+                "country": meta.get("iso_country", ""),
+                "municipality": meta.get("municipality", ""),
+                "ident": meta.get("ident", ""),
+                "iata": meta.get("iata", ""),
+                "elevation_ft": meta.get("elevation_ft"),
+                "lat": meta.get("lat"),
+                "lon": meta.get("lon"),
+                "distance_km": round(dist, 1),
+            }
+        )
     return jsonify({"filter": filter_str, "server_ms": server_ms, "results": results})
 
 

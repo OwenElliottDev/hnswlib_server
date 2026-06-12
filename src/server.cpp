@@ -627,7 +627,8 @@ int main() {
               vtStr = "BFLOAT16";
 
             BuiltSpace bs = build_space(spaceStr, vtStr, walHeader.dimension, walHeader.mrlScanDim);
-            auto *index = new hnswlib::HierarchicalNSW<float>(bs.space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
+            auto *index =
+                new hnswlib::HierarchicalNSW<float>(bs.space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
 
             ctx = std::make_shared<IndexContext>();
             ctx->index = index;

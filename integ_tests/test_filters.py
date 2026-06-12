@@ -238,5 +238,7 @@ class TestFilterStringsWithSpaces:
         assert set(results["hits"]) == {0, 1, 2, 4}
 
     def test_filter_string_with_spaces_parenthesized(self):
-        results = self._search('(city = "New York" OR city = "San Francisco") AND age >= 30')
+        results = self._search(
+            '(city = "New York" OR city = "San Francisco") AND age >= 30'
+        )
         assert set(results["hits"]) == {1, 2}

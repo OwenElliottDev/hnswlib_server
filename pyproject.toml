@@ -5,17 +5,18 @@ description = "Integ test running for the hnswlib server"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]
 
 [dependency-groups]
 dev = [
-    "black>=26.1.0",
-    "numpy>=2.4.2",
-    "pycurl>=7.45.7",
-    "requests>=2.32.5",
-    "ruff>=0.15.4",
-    "tqdm>=4.67.3",
+    "black>=26.5.1",
+    "clang-format>=22.1.5",
+    "numpy>=2.4.6",
+    "pycurl>=7.46.0",
+    "requests>=2.34.2",
+    "ruff>=0.15.17",
+    "tqdm>=4.68.2",
 ]
 
 [tool.black]
