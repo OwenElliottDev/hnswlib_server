@@ -71,6 +71,14 @@ struct IndexContext {
   WriteAheadLog *wal = nullptr;
   InFlightGuard *inFlightGuard = nullptr;
 
+  // MRL (Matryoshka) state. When mrl is enabled the graph is scanned at
+  // mrlScanDim leading dimensions and candidates are reranked at full
+  // dimensionality with mrlFullDistFunc (owned by the index's MrlSpace).
+  bool isMrl = false;
+  int mrlScanDim = 0;
+  hnswlib::DISTFUNC<float> mrlFullDistFunc = nullptr;
+  void *mrlFullDistFuncParam = nullptr;
+
   std::shared_mutex mutex; // per-index R/W lock
   std::atomic<bool> resizing{false};
   std::vector<BufferedWrite> writeBuffer;
@@ -117,7 +125,11 @@ std::shared_ptr<IndexContext> getContext(const std::string &indexName) {
   return it->second;
 }
 
-hnswlib::SpaceInterface<float> *create_space(const std::string &spaceType, const std::string &vectorType, int dim) {
+hnswlib::SpaceInterface<float> *create_base_space(const std::string &spaceType, const std::string &vectorType, int dim) {
+  // geodegrees is great-circle distance over (lat, lon) in float32; it ignores vectorType
+  if (spaceType == "GEODEGREES") {
+    return new hnswlib::GeoDegreesSpace(dim);
+  }
   if (vectorType == "FLOAT16") {
     if (spaceType == "IP")
       return new hnswlib::InnerProductFloat16Space(dim);
@@ -130,6 +142,51 @@ hnswlib::SpaceInterface<float> *create_space(const std::string &spaceType, const
     if (spaceType == "IP")
       return new hnswlib::InnerProductSpace(dim);
     return new hnswlib::L2Space(dim);
+  }
+}
+
+// Result of building an index's metric space. For MRL indexes the space is an
+// MrlSpace and the full-dimension distance function is exposed for reranking.
+struct BuiltSpace {
+  hnswlib::SpaceInterface<float> *space = nullptr;
+  bool isMrl = false;
+  hnswlib::DISTFUNC<float> fullDistFunc = nullptr;
+  void *fullDistFuncParam = nullptr;
+};
+
+// Builds the metric space for an index, wrapping it in an MrlSpace when mrlScanDim > 0.
+// Throws std::runtime_error on invalid configuration (e.g. geodegrees dim != 2,
+// or mrlScanDim >= dim).
+BuiltSpace build_space(const std::string &spaceType, const std::string &vectorType, int dim, int mrlScanDim) {
+  BuiltSpace bs;
+  if (mrlScanDim > 0) {
+    if (spaceType == "GEODEGREES") {
+      throw std::runtime_error("MRL is not supported for the geodegrees space");
+    }
+    if (mrlScanDim >= dim) {
+      throw std::runtime_error("mrlScanDim must be smaller than dimension");
+    }
+    auto *scanSpace = create_base_space(spaceType, vectorType, mrlScanDim);
+    auto *fullSpace = create_base_space(spaceType, vectorType, dim);
+    auto *mrl = new hnswlib::MrlSpace(scanSpace, fullSpace);
+    bs.space = mrl;
+    bs.isMrl = true;
+    bs.fullDistFunc = mrl->get_full_dist_func();
+    bs.fullDistFuncParam = mrl->get_full_dist_func_param();
+  } else {
+    bs.space = create_base_space(spaceType, vectorType, dim);
+  }
+  return bs;
+}
+
+std::string wal_space_to_string(WalSpaceType spaceType) {
+  switch (spaceType) {
+  case WalSpaceType::L2:
+    return "L2";
+  case WalSpaceType::GEODEGREES:
+    return "GEODEGREES";
+  default:
+    return "IP";
   }
 }
 
@@ -186,7 +243,13 @@ WalHeader makeWalHeader(const nlohmann::json &settings) {
   h.M = settings.value("M", 16);
   h.efConstruction = settings.value("efConstruction", 512);
   std::string space = settings.value("spaceType", "IP");
-  h.spaceType = (space == "L2") ? WalSpaceType::L2 : WalSpaceType::IP;
+  if (space == "L2")
+    h.spaceType = WalSpaceType::L2;
+  else if (space == "GEODEGREES")
+    h.spaceType = WalSpaceType::GEODEGREES;
+  else
+    h.spaceType = WalSpaceType::IP;
+  h.mrlScanDim = settings.value("mrlScanDim", 0);
   std::string vt = settings.value("vectorType", "FLOAT32");
   if (vt == "FLOAT16")
     h.vectorType = WalVectorType::FLOAT16;
@@ -242,27 +305,32 @@ std::shared_ptr<IndexContext> read_index_from_disk(const std::string &indexName)
   int dim = indexState.at("dimension").get<int>();
   std::string space = indexState.value("spaceType", "IP");
   std::string vectorType = indexState.value("vectorType", "FLOAT32");
+  int mrlScanDim = indexState.value("mrlScanDim", 0);
 
-  hnswlib::SpaceInterface<float> *metricSpace = create_space(space, vectorType, dim);
+  BuiltSpace bs = build_space(space, vectorType, dim, mrlScanDim);
 
   std::string index_path = "indices/" + indexName + ".bin";
-  auto *index = new hnswlib::HierarchicalNSW<float>(metricSpace, index_path, false, 0, true);
+  auto *index = new hnswlib::HierarchicalNSW<float>(bs.space, index_path, false, 0, true);
 
   auto ctx = std::make_shared<IndexContext>();
   ctx->index = index;
   ctx->settings = indexState;
+  ctx->isMrl = bs.isMrl;
+  ctx->mrlScanDim = mrlScanDim;
+  ctx->mrlFullDistFunc = bs.fullDistFunc;
+  ctx->mrlFullDistFuncParam = bs.fullDistFuncParam;
   return ctx;
 }
 
 void addPointToIndex(hnswlib::HierarchicalNSW<float> *index, const std::string &vectorType, int id, const std::vector<float> &vec) {
   if (vectorType == "FLOAT16") {
     auto converted = floats_to_f16(vec);
-    index->addPoint(converted.data(), id, 0);
+    index->addPoint(converted.data(), id, true);
   } else if (vectorType == "BFLOAT16") {
     auto converted = floats_to_bf16(vec);
-    index->addPoint(converted.data(), id, 0);
+    index->addPoint(converted.data(), id, true);
   } else {
-    index->addPoint(vec.data(), id, 0);
+    index->addPoint(vec.data(), id, true);
   }
 }
 
@@ -318,10 +386,17 @@ void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, s
     try {
       std::string vectorType = ctx->settings.value("vectorType", "FLOAT32");
 
-      // pre-resize once to fit all adds
+      // pre-resize once to fit all adds. resizeIndex reallocates the graph
+      // arrays, which is NOT safe to run concurrently with searches (a search
+      // reading the old buffers mid-realloc can dereference freed memory and
+      // crash later when it traverses a stale link). Hold the exclusive lock so
+      // live search traffic during replay is briefly blocked across the resize;
+      // the concurrent addPoint phase below stays lock-free (hnswlib supports
+      // concurrent add + search once the index is sized).
       size_t needed = ctx->index->cur_element_count + adds.size() + DEFAULT_INDEX_RESIZE_HEADROOM;
       if (needed > ctx->index->max_elements_) {
         size_t newMax = static_cast<size_t>(static_cast<float>(needed) * (1.0f + INDEX_GROWTH_FACTOR) + 1);
+        std::unique_lock<std::shared_mutex> resizeLock(ctx->mutex);
         ctx->index->resizeIndex(static_cast<int>(newMax));
       }
 
@@ -395,15 +470,20 @@ void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, s
         return;
       }
 
-      // deletes just flag marking (fast), do sequentially
-      for (uint32_t docId : deletes) {
-        if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
-          break;
-        try {
-          ctx->index->markDelete(docId);
-        } catch (...) {
+      // true deletion with graph repair; runs after all adds have joined. Holds
+      // the exclusive lock because removePoint rewires the graph and is not safe
+      // to run concurrently with live searches during replay.
+      if (!deletes.empty()) {
+        std::unique_lock<std::shared_mutex> delLock(ctx->mutex);
+        for (uint32_t docId : deletes) {
+          if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
+            break;
+          try {
+            ctx->index->removePoint(docId);
+          } catch (...) {
+          }
+          ctx->dataStore->remove(docId);
         }
-        ctx->dataStore->remove(docId);
       }
 
       LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size() << " deletes" << std::endl;
@@ -450,10 +530,19 @@ int main() {
         return crow::response(400, "Index already exists");
       }
 
-      hnswlib::SpaceInterface<float> *space = create_space(indexRequest.spaceType, indexRequest.vectorType, indexRequest.dimension);
+      BuiltSpace bs;
+      try {
+        bs = build_space(indexRequest.spaceType, indexRequest.vectorType, indexRequest.dimension, indexRequest.mrlScanDim);
+      } catch (const std::exception &e) {
+        return crow::response(400, std::string("Invalid index configuration: ") + e.what());
+      }
 
       auto ctx = std::make_shared<IndexContext>();
-      ctx->index = new hnswlib::HierarchicalNSW<float>(space, DEFAULT_INDEX_SIZE, indexRequest.M, indexRequest.efConstruction, 42, true);
+      ctx->index = new hnswlib::HierarchicalNSW<float>(bs.space, DEFAULT_INDEX_SIZE, indexRequest.M, indexRequest.efConstruction, 42, true);
+      ctx->isMrl = bs.isMrl;
+      ctx->mrlScanDim = indexRequest.mrlScanDim;
+      ctx->mrlFullDistFunc = bs.fullDistFunc;
+      ctx->mrlFullDistFuncParam = bs.fullDistFuncParam;
 
       nlohmann::json settings;
       settings["indexName"] = indexRequest.indexName;
@@ -463,6 +552,7 @@ int main() {
       settings["vectorType"] = indexRequest.vectorType;
       settings["efConstruction"] = indexRequest.efConstruction;
       settings["M"] = indexRequest.M;
+      settings["mrlScanDim"] = indexRequest.mrlScanDim;
       ctx->settings = settings;
 
       ctx->dataStore = new DataStore();
@@ -529,18 +619,22 @@ int main() {
           auto [walHeader, entries] = WriteAheadLog::readAll(walPath);
 
           if (!hasSnapshot) {
-            std::string spaceStr = (walHeader.spaceType == WalSpaceType::L2) ? "L2" : "IP";
+            std::string spaceStr = wal_space_to_string(walHeader.spaceType);
             std::string vtStr = "FLOAT32";
             if (walHeader.vectorType == WalVectorType::FLOAT16)
               vtStr = "FLOAT16";
             else if (walHeader.vectorType == WalVectorType::BFLOAT16)
               vtStr = "BFLOAT16";
 
-            hnswlib::SpaceInterface<float> *space = create_space(spaceStr, vtStr, walHeader.dimension);
-            auto *index = new hnswlib::HierarchicalNSW<float>(space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
+            BuiltSpace bs = build_space(spaceStr, vtStr, walHeader.dimension, walHeader.mrlScanDim);
+            auto *index = new hnswlib::HierarchicalNSW<float>(bs.space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
 
             ctx = std::make_shared<IndexContext>();
             ctx->index = index;
+            ctx->isMrl = bs.isMrl;
+            ctx->mrlScanDim = walHeader.mrlScanDim;
+            ctx->mrlFullDistFunc = bs.fullDistFunc;
+            ctx->mrlFullDistFuncParam = bs.fullDistFuncParam;
 
             nlohmann::json settings;
             settings["indexName"] = indexName;
@@ -549,6 +643,7 @@ int main() {
             settings["vectorType"] = vtStr;
             settings["efConstruction"] = walHeader.efConstruction;
             settings["M"] = walHeader.M;
+            settings["mrlScanDim"] = walHeader.mrlScanDim;
             ctx->settings = settings;
             ctx->dataStore = new DataStore();
           }
@@ -864,9 +959,15 @@ int main() {
     }
 
     {
-      std::shared_lock<std::shared_mutex> lock(ctx->mutex);
+      // exclusive lock: removePoint repairs the graph and is not thread-safe with
+      // concurrent adds/searches/resize.
+      std::unique_lock<std::shared_mutex> lock(ctx->mutex);
       for (int id : deleteReq.ids) {
-        ctx->index->markDelete(id);
+        try {
+          ctx->index->removePoint(id);
+        } catch (const std::exception &) {
+          // id not present in the index; treat as a no-op on the graph
+        }
         ctx->dataStore->remove(id);
         if (ctx->wal) {
           ctx->wal->logDelete(static_cast<uint32_t>(id));
@@ -942,19 +1043,33 @@ int main() {
 
     std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
 
+    // dispatch a kNN search honoring the (optional) filter and MRL reranking.
+    // For MRL indexes with rerankSize > 0 we scan at mrlScanDim dims and rerank the
+    // best rerankSize candidates at full dimensionality; rerankSize == 0 returns the
+    // scan-dim ranking directly. The exact-knn optimization is skipped for MRL since
+    // its scan distance is truncated.
+    bool useMrlRerank = ctx->isMrl && searchReq.rerankSize > 0;
+    auto knnSearch = [&](hnswlib::BaseFilterFunctor *f) {
+      if (useMrlRerank) {
+        return ctx->index->searchKnnMrl(queryData, searchReq.k, static_cast<size_t>(searchReq.rerankSize), ctx->mrlFullDistFunc,
+                                        ctx->mrlFullDistFuncParam, f);
+      }
+      return ctx->index->searchKnn(queryData, searchReq.k, f);
+    };
+
     if (searchReq.filter.size() > 0) {
       std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
       DynamicBitset filteredIds = ctx->dataStore->filter(filters);
 
       FilterIdsInSet filter(filteredIds);
 
-      if (filteredIds.count() < ctx->index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
+      if (!ctx->isMrl && filteredIds.count() < ctx->index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
         result = ctx->index->searchExactKnn(queryData, searchReq.k, &filter);
       } else {
-        result = ctx->index->searchKnn(queryData, searchReq.k, &filter);
+        result = knnSearch(&filter);
       }
     } else {
-      result = ctx->index->searchKnn(queryData, searchReq.k);
+      result = knnSearch(nullptr);
     }
 
     nlohmann::json response;
