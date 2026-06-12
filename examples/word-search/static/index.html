@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LEXICON · hnswlib word vectors</title>
+<style>
+  :root {
+    --bg: #06080d;
+    --panel: #0b0f17;
+    --panel-2: #0e131d;
+    --line: #1b2433;
+    --text: #cdd6e4;
+    --dim: #6b7689;
+    --accent: #38e1c6;
+    --accent-2: #4f9cff;
+    --plus: #38e1c6;
+    --minus: #ff5c7a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { background:
+    radial-gradient(1200px 600px at 70% -10%, rgba(56,225,198,.06), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(79,156,255,.06), transparent 60%), var(--bg); }
+  .scanline { position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: repeating-linear-gradient(0deg, rgba(56,225,198,.018) 0 1px, transparent 1px 3px); }
+
+  .wrap { position: relative; z-index: 1; max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; }
+
+  .head { display: flex; align-items: center; gap: 10px; }
+  .head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 10px var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .head h1 { font-size: 1rem; letter-spacing: .26em; margin: 0; font-weight: 700; }
+  .head .tag { font-family: var(--mono); font-size: .62rem; color: var(--dim);
+    letter-spacing: .14em; border: 1px solid var(--line); padding: 2px 7px; border-radius: 4px; margin-left: auto; }
+  .sub { color: var(--dim); font-size: .82rem; margin: 10px 0 22px; line-height: 1.6; }
+  .sub code { font-family: var(--mono); color: var(--accent); background: var(--panel-2);
+    border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; }
+
+  /* search bar */
+  .bar { display: flex; gap: 10px; align-items: stretch; }
+  .field { flex: 1; position: relative; }
+  .field input { width: 100%; padding: 15px 16px; font-size: 1.05rem; font-family: var(--mono);
+    border-radius: 11px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+  .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,225,198,.12); }
+  .live { position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    font-family: var(--mono); font-size: .58rem; letter-spacing: .12em; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+  .live.on { color: var(--accent); border-color: var(--accent); }
+
+  /* telemetry */
+  .status { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line); border-radius: 11px; overflow: hidden; margin: 14px 0 6px; }
+  .stat { background: var(--panel); padding: 11px 14px; }
+  .stat .k { font-family: var(--mono); font-size: .58rem; letter-spacing: .14em; color: var(--dim); text-transform: uppercase; }
+  .stat .v { font-family: var(--mono); font-size: 1.05rem; margin-top: 4px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .stat .v small { font-size: .62rem; color: var(--dim); }
+
+  /* parsed terms + examples */
+  .terms { min-height: 1.4em; margin: 14px 0 2px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .term { font-family: var(--mono); font-size: .76rem; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); }
+  .term.plus { color: var(--plus); border-color: rgba(56,225,198,.4); }
+  .term.minus { color: var(--minus); border-color: rgba(255,92,122,.4); }
+  .term.miss { color: var(--dim); text-decoration: line-through; }
+  .terms .op { color: var(--dim); font-family: var(--mono); }
+  .examples { margin: 4px 0 4px; font-size: .8rem; color: var(--dim); display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .examples code { font-family: var(--mono); background: var(--panel-2); border: 1px solid var(--line);
+    padding: 3px 8px; border-radius: 6px; cursor: pointer; color: #c8d0e0; }
+  .examples code:hover { border-color: var(--accent); color: var(--text); }
+
+  /* results */
+  .results { list-style: none; padding: 0; margin: 18px 0 0; }
+  .results li { display: flex; align-items: center; gap: 13px; padding: 11px 15px; border: 1px solid var(--line);
+    border-radius: 11px; margin-bottom: 8px; background: var(--panel); transition: .12s; }
+  .results li:hover { border-color: var(--accent-2); background: var(--panel-2); }
+  .rank { font-family: var(--mono); color: var(--dim); width: 22px; text-align: right; font-size: .8rem; }
+  .word { flex: 1; font-size: 1.08rem; }
+  .word .sub2 { font-family: var(--mono); font-size: .62rem; color: var(--dim); }
+  .meter { width: 150px; height: 8px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 5px; overflow: hidden; }
+  .meter > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+  .sim { width: 52px; text-align: right; color: var(--accent); font-family: var(--mono); font-size: .86rem; font-variant-numeric: tabular-nums; }
+  .msg { color: var(--dim); font-family: var(--mono); font-size: .82rem; margin-top: 14px; }
+  .msg.err { color: var(--minus); }
+</style>
+</head>
+<body>
+<div class="scanline"></div>
+<div class="wrap">
+  <div class="head">
+    <span class="dot"></span>
+    <h1>LEXICON</h1>
+    <span class="tag" id="tag">GLOVE · BF16</span>
+  </div>
+  <p class="sub">Semantic word search over GloVe vectors stored as <strong>bfloat16</strong> (cosine via IP space). Type a word — or do vector arithmetic like <code>king - man + woman</code>.</p>
+
+  <div class="bar">
+    <div class="field">
+      <input id="q" type="text" placeholder="coffee   ·   king - man + woman" autocomplete="off" autofocus />
+      <span class="live on" id="live">LIVE</span>
+    </div>
+  </div>
+
+  <div class="status">
+    <div class="stat"><div class="k">Response</div><div class="v" id="stResp">—<small> ms</small></div></div>
+    <div class="stat"><div class="k">Results</div><div class="v" id="stCount">—</div></div>
+    <div class="stat"><div class="k">Vectors</div><div class="v" id="stVocab">—</div></div>
+  </div>
+
+  <div class="terms" id="terms"></div>
+
+  <div class="examples">
+    <code>paris - france + japan</code>
+    <code>walking - walk + swim</code>
+    <code>bigger - big + small</code>
+    <code>einstein - physics + music</code>
+    <code>nebula</code>
+  </div>
+
+  <div class="msg" id="msg"></div>
+  <ul class="results" id="results"></ul>
+</div>
+
+<script>
+const el = id => document.getElementById(id);
+const q = el('q');
+let debounce = null;
+
+const TERM_RE = /([+-]?)\s*([a-zA-Z][a-zA-Z'\-]*)/g;
+function parseTerms(expr) {
+  const out = []; let m;
+  while ((m = TERM_RE.exec(expr)) !== null) out.push([m[1] === '-' ? '-' : '+', m[2].toLowerCase()]);
+  return out;
+}
+
+function renderTerms(expr, missing) {
+  const miss = new Set((missing || []).map(s => s.toLowerCase()));
+  const terms = parseTerms(expr);
+  const box = el('terms'); box.innerHTML = '';
+  terms.forEach(([sign, w], i) => {
+    if (i > 0 || sign === '-') {
+      const op = document.createElement('span'); op.className = 'op'; op.textContent = sign; box.appendChild(op);
+    }
+    const t = document.createElement('span');
+    t.className = 'term ' + (miss.has(w) ? 'miss' : (sign === '-' ? 'minus' : 'plus'));
+    t.textContent = w; box.appendChild(t);
+  });
+}
+
+async function loadMeta() {
+  try {
+    const m = await (await fetch('/api/meta')).json();
+    el('stVocab').textContent = m.vocab.toLocaleString();
+    el('tag').textContent = `GLOVE ${m.dim}d · BF16`;
+  } catch (e) {}
+}
+
+async function runSearch() {
+  const query = q.value.trim();
+  el('msg').textContent = '';
+  if (!query) { el('results').innerHTML = ''; el('terms').innerHTML = ''; el('stCount').textContent = '—'; el('stResp').innerHTML = '—<small> ms</small>'; return; }
+
+  const t0 = performance.now();
+  let res, data;
+  try {
+    res = await fetch('/api/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, k: 15 }) });
+    data = await res.json();
+  } catch (e) { el('msg').className = 'msg err'; el('msg').textContent = 'connection error'; return; }
+  const rtt = performance.now() - t0;
+  el('stResp').innerHTML = `${rtt.toFixed(1)}<small> ms</small>`;
+
+  renderTerms(query, data.missing);
+  if (!res.ok) {
+    el('msg').className = 'msg err'; el('msg').textContent = data.error || 'error';
+    el('results').innerHTML = ''; el('stCount').textContent = '0'; return;
+  }
+  if (data.missing && data.missing.length) {
+    el('msg').className = 'msg'; el('msg').textContent = 'not in vocabulary: ' + data.missing.join(', ');
+  }
+  el('stCount').textContent = data.results.length;
+
+  const ul = el('results'); ul.innerHTML = '';
+  data.results.forEach((r, i) => {
+    const pct = Math.max(2, Math.min(100, r.similarity * 100));
+    const li = document.createElement('li');
+    li.innerHTML =
+      `<span class="rank">${i + 1}</span>` +
+      `<span class="word">${r.word}</span>` +
+      `<span class="meter"><span style="width:${pct}%"></span></span>` +
+      `<span class="sim">${r.similarity.toFixed(3)}</span>`;
+    li.addEventListener('click', () => { q.value = r.word; runSearch(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    ul.appendChild(li);
+  });
+}
+
+function live() { clearTimeout(debounce); debounce = setTimeout(runSearch, 200); }
+
+q.addEventListener('input', live);
+document.querySelectorAll('.examples code').forEach(c =>
+  c.addEventListener('click', () => { q.value = c.textContent; runSearch(); }));
+
+loadMeta();
+</script>
+</body>
+</html>

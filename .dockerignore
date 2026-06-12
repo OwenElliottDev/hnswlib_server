@@ -1,4 +1,6 @@
 build/
+.git/
+examples/
 *.bin
 *.py
 README.md

@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AIRSPACE · hnswlib geodegrees</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #06080d;
+    --panel: #0b0f17;
+    --panel-2: #0e131d;
+    --line: #1b2433;
+    --text: #cdd6e4;
+    --dim: #6b7689;
+    --accent: #38e1c6;
+    --accent-2: #4f9cff;
+    --warn: #ff5c7a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #app { display: flex; height: 100%; }
+
+  /* ---------- sidebar ---------- */
+  #sidebar { width: 372px; min-width: 372px; background: var(--panel);
+    border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+  .head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 10px var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .brand h1 { font-size: 1rem; letter-spacing: .22em; margin: 0; font-weight: 700; }
+  .brand .tag { font-family: var(--mono); font-size: .62rem; color: var(--dim);
+    letter-spacing: .15em; border: 1px solid var(--line); padding: 2px 6px; border-radius: 4px; margin-left: auto; }
+  .sub { color: var(--dim); font-size: .76rem; margin: 9px 0 0; line-height: 1.5; }
+
+  /* status strip */
+  .status { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+    background: var(--line); border-bottom: 1px solid var(--line); }
+  .stat { background: var(--panel-2); padding: 9px 12px; }
+  .stat .k { font-family: var(--mono); font-size: .58rem; letter-spacing: .14em; color: var(--dim); text-transform: uppercase; }
+  .stat .v { font-family: var(--mono); font-size: 1.02rem; margin-top: 3px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .stat .v small { font-size: .62rem; color: var(--dim); }
+
+  .controls { padding: 14px 18px 26px; overflow-y: auto; flex: 1; }
+  .grp { margin-bottom: 16px; }
+  .lab { display: flex; align-items: center; justify-content: space-between;
+    font-family: var(--mono); font-size: .62rem; letter-spacing: .14em; color: var(--dim);
+    text-transform: uppercase; margin-bottom: 7px; }
+  input[type=text], input[type=number] { width: 100%; padding: 9px 11px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font-size: .9rem; font-family: var(--mono); }
+  input:focus { outline: none; border-color: var(--accent-2); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: .76rem; color: var(--dim); border: 1px solid var(--line); background: var(--panel-2);
+    padding: 6px 10px; border-radius: 18px; cursor: pointer; user-select: none; transition: .12s; }
+  .chip:hover { border-color: var(--accent-2); color: var(--text); }
+  .chip.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+
+  /* segmented unit toggle */
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { background: var(--panel-2); color: var(--dim); border: none; padding: 5px 12px;
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .1em; cursor: pointer; }
+  .seg button.on { background: var(--accent-2); color: #04101f; font-weight: 700; }
+
+  .filter-str { font-family: var(--mono); font-size: .72rem; color: var(--accent); background: var(--panel-2);
+    border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 6px;
+    padding: 8px 10px; word-break: break-word; min-height: 1em; line-height: 1.5; }
+
+  /* results list */
+  .results { list-style: none; padding: 0; margin: 4px 0 0; }
+  .results li { position: relative; padding: 9px 11px 9px 34px; border: 1px solid var(--line);
+    border-radius: 8px; margin-bottom: 7px; background: var(--panel-2); cursor: pointer; transition: .12s; }
+  .results li:hover, .results li.hot { border-color: var(--accent-2); background: #101826; }
+  .results .rk { position: absolute; left: 9px; top: 9px; font-family: var(--mono); font-size: .66rem;
+    color: var(--bg); background: var(--accent-2); width: 18px; height: 18px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; }
+  .results .nm { font-size: .85rem; line-height: 1.25; }
+  .results .det { color: var(--dim); font-size: .72rem; margin-top: 3px; font-family: var(--mono); }
+  .results .dist { float: right; color: var(--accent); font-family: var(--mono); font-size: .8rem;
+    font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; font-size: .64rem; padding: 1px 5px; border-radius: 4px;
+    background: var(--line); color: var(--dim); margin-right: 5px; font-family: var(--mono); }
+
+  /* ---------- map ---------- */
+  #map { flex: 1; background: var(--bg); }
+  .leaflet-container { background: var(--bg); }
+  .scanline { position: absolute; inset: 0; pointer-events: none; z-index: 500;
+    background: repeating-linear-gradient(0deg, rgba(56,225,198,.025) 0 1px, transparent 1px 3px); }
+
+  /* crosshair reticle */
+  .reticle { position: relative; }
+  .reticle::before, .reticle::after { content: ""; position: absolute; background: var(--warn); }
+  .reticle::before { left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%); }
+  .reticle::after { top: 50%; left: 0; height: 1px; width: 100%; transform: translateY(-50%); }
+  .reticle .ring { position: absolute; inset: 5px; border: 1px solid var(--warn); border-radius: 50%;
+    box-shadow: 0 0 8px var(--warn); animation: ret 2.4s infinite; }
+  @keyframes ret { 0%{transform:scale(.7);opacity:1} 100%{transform:scale(1.3);opacity:0} }
+
+  /* distance labels riding the range lines */
+  .dlabel { background: rgba(7,11,18,.82); border: 1px solid var(--line); color: var(--accent);
+    font-family: var(--mono); font-size: .66rem; padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+  .dlabel::before { display: none; }
+  .leaflet-tooltip.dlabel { margin: 0; }
+
+  .node-pop { font-family: var(--mono); font-size: .74rem; line-height: 1.5; }
+  .node-pop b { color: var(--accent); font-family: inherit; }
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+  .leaflet-popup-tip { background: var(--panel); border: 1px solid var(--line); }
+  .leaflet-bar a { background: var(--panel-2); color: var(--text); border-bottom-color: var(--line); }
+  .leaflet-bar a:hover { background: var(--panel); }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="head">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>AIRSPACE</h1>
+        <span class="tag">GEODEGREES</span>
+      </div>
+      <p class="sub">Nearest-airport search over ~86k nodes. Click the map to set the query point — results update live as you adjust filters.</p>
+    </div>
+
+    <div class="status">
+      <div class="stat"><div class="k">Response</div><div class="v" id="stResp">—<small> ms</small></div></div>
+      <div class="stat"><div class="k">Contacts</div><div class="v" id="stCount">—</div></div>
+      <div class="stat"><div class="k">Fix</div><div class="v" id="stFix" style="font-size:.72rem">—</div></div>
+    </div>
+
+    <div class="controls">
+      <div class="grp">
+        <div class="lab">Units</div>
+        <div class="seg" id="units">
+          <button data-u="metric" class="on">METRIC</button>
+          <button data-u="imperial">IMPERIAL</button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="lab">Airport class</div>
+        <div class="chips" id="types">
+          <span class="chip on" data-v="large_airport">large</span>
+          <span class="chip" data-v="medium_airport">medium</span>
+          <span class="chip" data-v="small_airport">small</span>
+          <span class="chip" data-v="heliport">heliport</span>
+          <span class="chip" data-v="seaplane_base">seaplane</span>
+        </div>
+      </div>
+
+      <div class="grp row2">
+        <div>
+          <div class="lab">Country (ISO)</div>
+          <input type="text" id="country" placeholder="ANY" autocomplete="off" />
+        </div>
+        <div>
+          <div class="lab">Contacts (k)</div>
+          <input type="number" id="k" value="10" min="1" max="100" />
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="lab">Name contains</div>
+        <input type="text" id="name" placeholder="e.g. international" autocomplete="off" />
+      </div>
+
+      <div class="grp">
+        <div class="lab">Min elevation <span id="elevUnit">(m)</span></div>
+        <input type="number" id="elev" placeholder="0" />
+      </div>
+
+      <div class="grp">
+        <div class="lab">Server filter</div>
+        <div class="filter-str" id="filterStr">(none)</div>
+      </div>
+
+      <ul class="results" id="results"></ul>
+    </div>
+  </aside>
+
+  <div id="map"><div class="scanline"></div></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map', { zoomControl: true, attributionControl: false }).setView([40.4168, -3.7038], 6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+
+const FT_PER_M = 3.28084, MI_PER_KM = 0.621371;
+let units = 'metric';
+let lastLat = 40.4168, lastLon = -3.7038;
+let debounce = null;
+
+const layer = L.layerGroup().addTo(map);
+let reticle = null;
+const el = id => document.getElementById(id);
+
+function distLabel(km) {
+  return units === 'metric' ? `${km.toFixed(1)} km` : `${(km * MI_PER_KM).toFixed(1)} mi`;
+}
+function elevLabel(ft) {
+  if (ft == null) return null;
+  return units === 'metric' ? `${Math.round(ft / FT_PER_M)} m` : `${ft} ft`;
+}
+function selectedTypes() {
+  return Array.from(document.querySelectorAll('#types .chip.on')).map(c => c.dataset.v);
+}
+
+function setReticle(lat, lon) {
+  if (reticle) map.removeLayer(reticle);
+  const icon = L.divIcon({ className: '', html: '<div class="reticle" style="width:30px;height:30px"><div class="ring"></div></div>', iconSize: [30, 30], iconAnchor: [15, 15] });
+  reticle = L.marker([lat, lon], { icon, interactive: false, keyboard: false }).addTo(map);
+}
+
+async function runSearch(lat, lon) {
+  // clicks on a repeated copy of the world map yield out-of-range longitudes;
+  // wrap back to [-180, 180] so the reticle sits on the same copy as results
+  lon = ((lon + 180) % 360 + 360) % 360 - 180;
+  lastLat = lat; lastLon = lon;
+  setReticle(lat, lon);
+  el('stFix').textContent = `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+
+  // elevation input is shown in the active unit; the dataset is in feet
+  let minElev = el('elev').value;
+  if (minElev && units === 'metric') minElev = Math.round(parseFloat(minElev) * FT_PER_M);
+
+  const body = {
+    lat, lon,
+    k: parseInt(el('k').value) || 10,
+    types: selectedTypes(),
+    country: el('country').value,
+    name_contains: el('name').value,
+    min_elev: minElev,
+  };
+
+  const t0 = performance.now();
+  let res, data;
+  try {
+    res = await fetch('/api/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    data = await res.json();
+  } catch (e) { el('filterStr').textContent = 'connection error'; return; }
+  const rtt = performance.now() - t0;
+
+  el('stResp').innerHTML = `${rtt.toFixed(1)}<small> ms</small>`;
+  el('filterStr').textContent = data.filter || '(none)';
+  layer.clearLayers();
+  el('results').innerHTML = '';
+  if (!res.ok) { el('filterStr').textContent = data.error || 'error'; el('stCount').textContent = '0'; return; }
+
+  const rows = data.results;
+  el('stCount').textContent = rows.length;
+
+  rows.forEach((r, i) => {
+    if (r.lat == null || r.lon == null) return;
+    const fade = 0.85 - (i / rows.length) * 0.55;
+    // range line from query point to contact
+    L.polyline([[lat, lon], [r.lat, r.lon]], { color: '#38e1c6', weight: 1, opacity: fade, dashArray: '4 5' }).addTo(layer);
+    // distance label at the line midpoint (only the nearest few, to avoid clutter at high k)
+    if (i < 12) {
+      const mid = [(lat + r.lat) / 2, (lon + r.lon) / 2];
+      L.tooltip({ permanent: true, direction: 'center', className: 'dlabel', offset: [0, 0] })
+        .setLatLng(mid).setContent(distLabel(r.distance_km)).addTo(layer);
+    }
+    // contact node
+    const code = r.iata || r.ident || '';
+    const m = L.circleMarker([r.lat, r.lon], {
+      radius: 5, color: '#38e1c6', weight: 2, fillColor: '#06080d', fillOpacity: 1
+    }).addTo(layer);
+    const elev = elevLabel(r.elevation_ft);
+    m.bindPopup(
+      `<div class="node-pop"><b>${r.name || '(unnamed)'}</b><br>` +
+      `${code ? code + ' · ' : ''}${r.type.replace('_', ' ')}<br>` +
+      `${r.municipality ? r.municipality + ', ' : ''}${r.country}<br>` +
+      `${distLabel(r.distance_km)}${elev ? ' · ' + elev : ''}</div>`,
+      { className: 'node-pop' }
+    );
+    m.on('mouseover', () => { m.openPopup(); highlight(i, true); });
+    m.on('mouseout', () => highlight(i, false));
+    r._m = m;
+
+    const li = document.createElement('li');
+    li.innerHTML =
+      `<span class="rk">${i + 1}</span>` +
+      `<span class="dist">${distLabel(r.distance_km)}</span>` +
+      `<div class="nm">${r.name || '(unnamed)'}</div>` +
+      `<div class="det"><span class="badge">${code || '—'}</span>${r.type.replace('_', ' ')} · ${r.municipality || '—'}, ${r.country}` +
+      (elev ? ' · ' + elev : '') + `</div>`;
+    li.addEventListener('mouseenter', () => { m.openPopup(); });
+    li.addEventListener('click', () => { map.panTo([r.lat, r.lon]); m.openPopup(); });
+    li._marker = m;
+    el('results').appendChild(li);
+  });
+}
+
+function highlight(i, on) {
+  const li = el('results').children[i];
+  if (li) li.classList.toggle('hot', on);
+}
+
+function rerun() {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => runSearch(lastLat, lastLon), 180);
+}
+
+// live updates on every control
+el('types').addEventListener('click', e => {
+  if (e.target.classList.contains('chip')) { e.target.classList.toggle('on'); rerun(); }
+});
+['country', 'name', 'elev', 'k'].forEach(id => el(id).addEventListener('input', rerun));
+el('units').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  units = b.dataset.u;
+  document.querySelectorAll('#units button').forEach(x => x.classList.toggle('on', x === b));
+  el('elevUnit').textContent = units === 'metric' ? '(m)' : '(ft)';
+  runSearch(lastLat, lastLon); // re-render with new units immediately
+});
+
+map.on('click', e => runSearch(e.latlng.lat, e.latlng.lng));
+runSearch(lastLat, lastLon);
+</script>
+</body>
+</html>
