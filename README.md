@@ -403,7 +403,7 @@ Integration tests are located in the `integ_tests` directory. You can run them u
 uv sync --dev
 ```
 
-With HNSWLiv server running, you can execute the integration tests:
+With HNSWLib server running, you can execute the integration tests:
 
 ```bash
 uv run pytest
