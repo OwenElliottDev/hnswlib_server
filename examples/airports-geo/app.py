@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "flask",
+#     "requests",
+# ]
+# ///
 """Web UI for nearest-airport search over a GEODEGREES index.
 
 Click anywhere on the map to find the closest airports (great-circle distance in

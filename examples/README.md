@@ -1,8 +1,9 @@
 # Examples
 
-Runnable demos of the hnswlib server. Each lives in its own folder with a README
-and uses [`uv`](https://github.com/astral-sh/uv) to pull its dependencies on the
-fly — no virtualenv setup required.
+Runnable demos of the hnswlib server. Each lives in its own folder with a README.
+The Python scripts declare their dependencies inline (PEP 723), so
+[`uv`](https://github.com/astral-sh/uv) installs them on the fly — just
+`uv run <script>.py`, no virtualenv setup required.
 
 All examples talk to the server over HTTP. Run it in Docker — build the image
 once from the repo root (the published image predates the 0.10.0 features these

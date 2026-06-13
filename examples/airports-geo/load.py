@@ -1,3 +1,9 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "requests",
+# ]
+# ///
 """Ingest the OurAirports dataset into a GEODEGREES index.
 
 The GEODEGREES space takes 2-D vectors of [latitude, longitude] in degrees and

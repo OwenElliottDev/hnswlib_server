@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Download the OurAirports dataset (~80k airports worldwide).
 
 The CSV has latitude/longitude plus rich fields (type, country, elevation,

@@ -1,3 +1,11 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "flask",
+#     "numpy",
+#     "requests",
+# ]
+# ///
 """Web UI for semantic word search backed by the hnswlib server.
 
 Type a word to find its nearest neighbours, or do vector arithmetic like

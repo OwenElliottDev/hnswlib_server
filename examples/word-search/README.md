@@ -24,17 +24,17 @@ browser ──▶ Flask app (this dir) ──▶ hnswlib server (:8685)
 2. Download the vectors (one-time; the GloVe 6B archive is ~822 MB):
    ```bash
    cd examples/word-search
-   uv run --with numpy python download_data.py --dim 100
+   uv run download_data.py --dim 100
    ```
 
 3. Load the full ~400k-word vocabulary into the server as bfloat16:
    ```bash
-   uv run --with numpy --with requests python load.py --dim 100
+   uv run load.py --dim 100
    ```
 
 4. Start the search UI and open <http://localhost:5001>:
    ```bash
-   uv run --with numpy --with requests --with flask python app.py --dim 100
+   uv run app.py --dim 100
    ```
 
    `load.py` and `app.py` both default to the full vocabulary; if you pass

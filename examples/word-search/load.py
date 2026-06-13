@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "numpy",
+#     "requests",
+# ]
+# ///
 """Ingest GloVe word vectors into the hnswlib server as a BFLOAT16 index.
 
 Vectors are L2-normalized and the index uses the IP (inner product) space, so

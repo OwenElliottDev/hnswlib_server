@@ -24,17 +24,17 @@ browser (Leaflet map) ──▶ Flask app ──▶ hnswlib server (:8685)
 2. Download the dataset (a few MB):
    ```bash
    cd examples/airports-geo
-   uv run python download_data.py
+   uv run download_data.py
    ```
 
 3. Load the airports into a GEODEGREES index:
    ```bash
-   uv run --with requests python load.py
+   uv run load.py
    ```
 
 4. Start the map UI and open <http://localhost:5002>:
    ```bash
-   uv run --with requests --with flask python app.py
+   uv run app.py
    ```
 
 ## Things to try

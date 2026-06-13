@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Download GloVe word vectors and extract a single-dimension file.
 
 GloVe vectors are pre-trained, meaningful word embeddings, so this example needs

@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "numpy",
+#     "requests",
+# ]
+# ///
 """WAL recovery demo: crash a large index, then serve live search during replay.
 
 Scenario:

@@ -26,7 +26,7 @@ sure nothing else is using that port. Build the image once from the repo root
 
 ```bash
 cd examples/wal-recovery
-uv run --with numpy --with requests python run.py
+uv run run.py
 ```
 
 Options: `--num-docs 150000`, `--dim 64`, `--batch-size 2000`, `--keep-workdir`.
