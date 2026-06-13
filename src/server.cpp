@@ -519,6 +519,13 @@ int main() {
 
   CROW_ROUTE(app, "/health").methods(crow::HTTPMethod::GET)([]() { return "OK"; });
 
+  CROW_ROUTE(app, "/version").methods(crow::HTTPMethod::GET)([]() {
+    nlohmann::json response;
+    response["version"] = "0.3.0";
+    response["tagline"] = "HNSWLib Server: https://github.com/OwenElliottDev/hnswlib_server";
+    return crow::response(response.dump());
+  });
+
   CROW_ROUTE(app, "/create_index").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     IndexRequest indexRequest = data.get<IndexRequest>();
@@ -1103,9 +1110,9 @@ int main() {
     return crow::response(response.dump());
   });
 
-  std::cout << "Server started on port 8685!" << std::endl;
+  std::cout << "Welcome to HNSWLib server." << std::endl;
+  std::cout << "Server started on port 8685." << std::endl;
   std::cout << "Press Ctrl+C to quit" << std::endl;
-  std::cout << "All other stdout is suppressed as an optimisation" << std::endl;
 
   app.port(8685).multithreaded().run();
 
