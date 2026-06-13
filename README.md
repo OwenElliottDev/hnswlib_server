@@ -182,7 +182,7 @@ make
 Format in place:
 
 ```bash
-uvx clang-format@20.1.7 -i src/*.cpp src/*.hpp
+uv run clang-format -i src/*.cpp src/*.hpp
 ```
 
 ## Running
