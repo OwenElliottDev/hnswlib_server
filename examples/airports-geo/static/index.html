@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Airport search · hnswlib</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e5e7eb;
+    --text: #111827;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eef3ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #app { display: flex; height: 100%; }
+
+  #sidebar { width: 340px; min-width: 340px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; }
+  .head { padding: 20px 20px 14px; border-bottom: 1px solid var(--border); }
+  .head h1 { font-size: 1.05rem; font-weight: 600; margin: 0; }
+  .head p { color: var(--muted); font-size: .82rem; margin: 6px 0 0; line-height: 1.5; }
+
+  .stats { display: flex; gap: 18px; padding: 12px 20px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: .8rem; }
+  .stats b { display: block; color: var(--text); font-size: .95rem; font-weight: 600; margin-top: 2px; }
+
+  .controls { padding: 16px 20px 28px; overflow-y: auto; flex: 1; }
+  .grp { margin-bottom: 16px; }
+  label.lab { display: block; font-size: .78rem; color: var(--muted); margin-bottom: 6px; }
+  input[type=text], input[type=number] { width: 100%; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: #fff; color: var(--text); font-size: .9rem; }
+  input:focus { outline: none; border-color: var(--accent); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: .8rem; color: var(--text); border: 1px solid var(--border); background: #fff;
+    padding: 5px 11px; border-radius: 16px; cursor: pointer; user-select: none; }
+  .chip:hover { border-color: var(--accent); }
+  .chip.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button { background: #fff; color: var(--muted); border: none; padding: 6px 14px; font-size: .82rem; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #fff; }
+
+  .filter-str { font-family: ui-monospace, Menlo, monospace; font-size: .76rem; color: var(--muted);
+    background: #f9fafb; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; word-break: break-word; min-height: 1em; }
+
+  .results { list-style: none; padding: 0; margin: 6px 0 0; }
+  .results li { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: #fff; cursor: pointer; }
+  .results li:hover { border-color: var(--accent); }
+  .results .nm { font-size: .9rem; }
+  .results .det { color: var(--muted); font-size: .78rem; margin-top: 3px; }
+  .results .km { float: right; color: var(--accent); font-size: .82rem; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; font-size: .68rem; padding: 1px 6px; border-radius: 4px; background: #f3f4f6; color: var(--muted); margin-right: 6px; }
+
+  #map { flex: 1; }
+  .dlabel { background: #fff; border: 1px solid var(--border); color: #374151; font-size: .7rem;
+    padding: 1px 6px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .leaflet-tooltip.dlabel:before { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="head">
+      <h1>Airport search</h1>
+      <p>Click the map to find the nearest airports by great-circle distance. Results update as you change filters.</p>
+    </div>
+
+    <div class="stats">
+      <div>Results<b id="stCount">—</b></div>
+      <div>Response<b id="stResp">—</b></div>
+      <div>Query<b id="stFix">—</b></div>
+    </div>
+
+    <div class="controls">
+      <div class="grp">
+        <label class="lab">Units</label>
+        <div class="seg" id="units">
+          <button data-u="metric" class="on">Metric</button>
+          <button data-u="imperial">Imperial</button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <label class="lab">Airport type</label>
+        <div class="chips" id="types">
+          <span class="chip on" data-v="large_airport">large</span>
+          <span class="chip" data-v="medium_airport">medium</span>
+          <span class="chip" data-v="small_airport">small</span>
+          <span class="chip" data-v="heliport">heliport</span>
+          <span class="chip" data-v="seaplane_base">seaplane</span>
+        </div>
+      </div>
+
+      <div class="grp row2">
+        <div>
+          <label class="lab">Country (ISO)</label>
+          <input type="text" id="country" placeholder="any" autocomplete="off" />
+        </div>
+        <div>
+          <label class="lab">Results (k)</label>
+          <input type="number" id="k" value="10" min="1" max="100" />
+        </div>
+      </div>
+
+      <div class="grp">
+        <label class="lab">Name contains</label>
+        <input type="text" id="name" placeholder="e.g. international" autocomplete="off" />
+      </div>
+
+      <div class="grp">
+        <label class="lab">Min elevation <span id="elevUnit">(m)</span></label>
+        <input type="number" id="elev" placeholder="0" />
+      </div>
+
+      <div class="grp">
+        <label class="lab">Filter sent to server</label>
+        <div class="filter-str" id="filterStr">(none)</div>
+      </div>
+
+      <ul class="results" id="results"></ul>
+    </div>
+  </aside>
+
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map', { zoomControl: true, attributionControl: false }).setView([40.4168, -3.7038], 6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+
+const FT_PER_M = 3.28084, MI_PER_KM = 0.621371;
+let units = 'metric';
+let lastLat = 40.4168, lastLon = -3.7038;
+let debounce = null;
+
+const layer = L.layerGroup().addTo(map);
+let queryMarker = null;
+const el = id => document.getElementById(id);
+
+const distLabel = km => units === 'metric' ? `${km.toFixed(1)} km` : `${(km * MI_PER_KM).toFixed(1)} mi`;
+const elevLabel = ft => ft == null ? null : (units === 'metric' ? `${Math.round(ft / FT_PER_M)} m` : `${ft} ft`);
+const selectedTypes = () => Array.from(document.querySelectorAll('#types .chip.on')).map(c => c.dataset.v);
+
+function setQueryMarker(lat, lon) {
+  if (queryMarker) map.removeLayer(queryMarker);
+  queryMarker = L.circleMarker([lat, lon], { radius: 6, color: '#2563eb', weight: 2, fillColor: '#2563eb', fillOpacity: 0.9, interactive: false }).addTo(map);
+}
+
+async function runSearch(lat, lon) {
+  // clicks on a repeated copy of the world map yield out-of-range longitudes
+  lon = ((lon + 180) % 360 + 360) % 360 - 180;
+  lastLat = lat; lastLon = lon;
+  setQueryMarker(lat, lon);
+  el('stFix').textContent = `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+
+  let minElev = el('elev').value;
+  if (minElev && units === 'metric') minElev = Math.round(parseFloat(minElev) * FT_PER_M);
+
+  const body = {
+    lat, lon,
+    k: parseInt(el('k').value) || 10,
+    types: selectedTypes(),
+    country: el('country').value,
+    name_contains: el('name').value,
+    min_elev: minElev,
+  };
+
+  const t0 = performance.now();
+  let res, data;
+  try {
+    res = await fetch('/api/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    data = await res.json();
+  } catch (e) { el('filterStr').textContent = 'connection error'; return; }
+
+  el('stResp').textContent = `${(performance.now() - t0).toFixed(0)} ms`;
+  el('filterStr').textContent = data.filter || '(none)';
+  layer.clearLayers();
+  el('results').innerHTML = '';
+  if (!res.ok) { el('filterStr').textContent = data.error || 'error'; el('stCount').textContent = '0'; return; }
+
+  el('stCount').textContent = data.results.length;
+  data.results.forEach((r, i) => {
+    if (r.lat == null || r.lon == null) return;
+    L.polyline([[lat, lon], [r.lat, r.lon]], { color: '#2563eb', weight: 1.5, opacity: 0.4 }).addTo(layer);
+    if (i < 12) {
+      L.tooltip({ permanent: true, direction: 'center', className: 'dlabel' })
+        .setLatLng([(lat + r.lat) / 2, (lon + r.lon) / 2]).setContent(distLabel(r.distance_km)).addTo(layer);
+    }
+    const code = r.iata || r.ident || '';
+    const m = L.circleMarker([r.lat, r.lon], { radius: 5, color: '#2563eb', weight: 2, fillColor: '#fff', fillOpacity: 1 }).addTo(layer);
+    const elev = elevLabel(r.elevation_ft);
+    m.bindPopup(`<b>${r.name || '(unnamed)'}</b><br>${code ? code + ' · ' : ''}${r.type.replace('_', ' ')}<br>` +
+      `${r.municipality ? r.municipality + ', ' : ''}${r.country}<br>${distLabel(r.distance_km)}${elev ? ' · ' + elev : ''}`);
+    m.on('mouseover', () => { m.openPopup(); highlight(i, true); });
+    m.on('mouseout', () => highlight(i, false));
+
+    const li = document.createElement('li');
+    li.innerHTML =
+      `<span class="km">${distLabel(r.distance_km)}</span>` +
+      `<div class="nm">${i + 1}. ${r.name || '(unnamed)'}</div>` +
+      `<div class="det"><span class="badge">${code || '—'}</span>${r.type.replace('_', ' ')} · ${r.municipality || '—'}, ${r.country}` +
+      (elev ? ' · ' + elev : '') + `</div>`;
+    li.addEventListener('mouseenter', () => m.openPopup());
+    li.addEventListener('click', () => { map.panTo([r.lat, r.lon]); m.openPopup(); });
+    el('results').appendChild(li);
+  });
+}
+
+function highlight(i, on) {
+  const li = el('results').children[i];
+  if (li) li.style.borderColor = on ? '#2563eb' : '';
+}
+
+function rerun() { clearTimeout(debounce); debounce = setTimeout(() => runSearch(lastLat, lastLon), 180); }
+
+el('types').addEventListener('click', e => { if (e.target.classList.contains('chip')) { e.target.classList.toggle('on'); rerun(); } });
+['country', 'name', 'elev', 'k'].forEach(id => el(id).addEventListener('input', rerun));
+el('units').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  units = b.dataset.u;
+  document.querySelectorAll('#units button').forEach(x => x.classList.toggle('on', x === b));
+  el('elevUnit').textContent = units === 'metric' ? '(m)' : '(ft)';
+  runSearch(lastLat, lastLon);
+});
+
+map.on('click', e => runSearch(e.latlng.lat, e.latlng.lng));
+runSearch(lastLat, lastLon);
+</script>
+</body>
+</html>

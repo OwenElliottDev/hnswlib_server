@@ -18,7 +18,7 @@ static constexpr size_t WAL_COMPACT_THRESHOLD = 64 * 1024 * 1024; // 64MB
 
 enum class WalOpType : uint8_t { ADD = 0x01, DELETE = 0x02 };
 
-enum class WalSpaceType : uint8_t { L2 = 0, IP = 1 };
+enum class WalSpaceType : uint8_t { L2 = 0, IP = 1, GEODEGREES = 2 };
 
 enum class WalVectorType : uint8_t { FLOAT32 = 0, FLOAT16 = 1, BFLOAT16 = 2 };
 
@@ -26,7 +26,8 @@ enum class WalVectorType : uint8_t { FLOAT32 = 0, FLOAT16 = 1, BFLOAT16 = 2 };
 //
 // header (256 bytes, zero-padded):
 //   [magic:4] [version:4] [dimension:4] [M:4] [efConstruction:4]
-//   [spaceType:1] [vectorType:1] [reserved:234]
+//   [spaceType:1] [vectorType:1] [mrlScanDim:4] [reserved:230]
+//   (mrlScanDim reads as 0 from older zero-padded headers, i.e. MRL disabled)
 //
 // each entry:
 //   [entryLength:4] [payload...] [crc32:4]
@@ -47,6 +48,7 @@ struct WalHeader {
   int32_t efConstruction = 512;
   WalSpaceType spaceType = WalSpaceType::IP;
   WalVectorType vectorType = WalVectorType::FLOAT32;
+  int32_t mrlScanDim = 0; // MRL scan dimensionality; 0 = MRL disabled
 };
 
 struct WalEntry {

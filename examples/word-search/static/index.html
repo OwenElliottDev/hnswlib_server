@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Word search · hnswlib</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e5e7eb;
+    --text: #111827;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --plus: #2563eb;
+    --minus: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 48px 20px 80px; }
+
+  h1 { font-size: 1.4rem; font-weight: 600; margin: 0; }
+  .sub { color: var(--muted); font-size: .9rem; margin: 8px 0 24px; line-height: 1.55; }
+  .sub code { font-family: ui-monospace, Menlo, monospace; font-size: .85em; background: #eef1f5;
+    border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; }
+
+  input#q { width: 100%; padding: 13px 15px; font-size: 1.05rem; border-radius: 8px;
+    border: 1px solid var(--border); background: #fff; color: var(--text); }
+  input#q:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+
+  .meta { display: flex; gap: 18px; margin: 12px 2px 0; color: var(--muted); font-size: .8rem; }
+  .meta b { color: var(--text); font-weight: 600; }
+
+  .examples { margin: 16px 0 4px; display: flex; flex-wrap: wrap; gap: 7px; }
+  .examples code { font-family: ui-monospace, Menlo, monospace; font-size: .8rem; background: #fff;
+    border: 1px solid var(--border); padding: 4px 9px; border-radius: 6px; cursor: pointer; color: #374151; }
+  .examples code:hover { border-color: var(--accent); }
+
+  .terms { min-height: 1.2em; margin: 14px 2px 0; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: .85rem; }
+  .term { font-family: ui-monospace, Menlo, monospace; }
+  .term.plus { color: var(--plus); }
+  .term.minus { color: var(--minus); }
+  .term.miss { color: var(--muted); text-decoration: line-through; }
+  .terms .op { color: var(--muted); }
+
+  .results { list-style: none; padding: 0; margin: 16px 0 0; }
+  .results li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 8px; background: #fff; }
+  .rank { color: var(--muted); width: 20px; text-align: right; font-size: .82rem; }
+  .word { flex: 1; font-size: 1.02rem; }
+  .meter { width: 140px; height: 6px; background: #eef1f5; border-radius: 4px; overflow: hidden; }
+  .meter > span { display: block; height: 100%; background: var(--accent); }
+  .sim { width: 48px; text-align: right; color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+  .msg { color: var(--muted); font-size: .85rem; margin-top: 14px; }
+  .msg.err { color: var(--minus); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Word search</h1>
+  <p class="sub">Nearest neighbours over GloVe word vectors (stored as bfloat16, cosine similarity). Type a word, or do vector arithmetic like <code>king - man + woman</code>.</p>
+
+  <input id="q" type="text" placeholder="coffee   ·   king - man + woman" autocomplete="off" autofocus />
+
+  <div class="meta">
+    <span>Response <b id="stResp">—</b></span>
+    <span>Results <b id="stCount">—</b></span>
+    <span>Vectors <b id="stVocab">—</b></span>
+  </div>
+
+  <div class="examples">
+    <code>paris - france + japan</code>
+    <code>walking - walk + swim</code>
+    <code>bigger - big + small</code>
+    <code>nebula</code>
+  </div>
+
+  <div class="terms" id="terms"></div>
+  <div class="msg" id="msg"></div>
+  <ul class="results" id="results"></ul>
+</div>
+
+<script>
+const el = id => document.getElementById(id);
+const q = el('q');
+let debounce = null;
+
+const TERM_RE = /([+-]?)\s*([a-zA-Z][a-zA-Z'\-]*)/g;
+function parseTerms(expr) {
+  const out = []; let m;
+  while ((m = TERM_RE.exec(expr)) !== null) out.push([m[1] === '-' ? '-' : '+', m[2].toLowerCase()]);
+  return out;
+}
+
+function renderTerms(expr, missing) {
+  const miss = new Set((missing || []).map(s => s.toLowerCase()));
+  const box = el('terms'); box.innerHTML = '';
+  parseTerms(expr).forEach(([sign, w], i) => {
+    if (i > 0 || sign === '-') {
+      const op = document.createElement('span'); op.className = 'op'; op.textContent = ' ' + sign + ' '; box.appendChild(op);
+    }
+    const t = document.createElement('span');
+    t.className = 'term ' + (miss.has(w) ? 'miss' : (sign === '-' ? 'minus' : 'plus'));
+    t.textContent = w; box.appendChild(t);
+  });
+}
+
+async function loadMeta() {
+  try {
+    const m = await (await fetch('/api/meta')).json();
+    el('stVocab').textContent = m.vocab.toLocaleString();
+  } catch (e) {}
+}
+
+async function runSearch() {
+  const query = q.value.trim();
+  el('msg').textContent = '';
+  if (!query) { el('results').innerHTML = ''; el('terms').innerHTML = ''; el('stCount').textContent = '—'; el('stResp').textContent = '—'; return; }
+
+  const t0 = performance.now();
+  let res, data;
+  try {
+    res = await fetch('/api/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, k: 15 }) });
+    data = await res.json();
+  } catch (e) { el('msg').className = 'msg err'; el('msg').textContent = 'connection error'; return; }
+  el('stResp').textContent = `${(performance.now() - t0).toFixed(0)} ms`;
+
+  renderTerms(query, data.missing);
+  if (!res.ok) {
+    el('msg').className = 'msg err'; el('msg').textContent = data.error || 'error';
+    el('results').innerHTML = ''; el('stCount').textContent = '0'; return;
+  }
+  if (data.missing && data.missing.length) {
+    el('msg').className = 'msg'; el('msg').textContent = 'not in vocabulary: ' + data.missing.join(', ');
+  }
+  el('stCount').textContent = data.results.length;
+
+  const ul = el('results'); ul.innerHTML = '';
+  data.results.forEach((r, i) => {
+    const pct = Math.max(2, Math.min(100, r.similarity * 100));
+    const li = document.createElement('li');
+    li.innerHTML =
+      `<span class="rank">${i + 1}</span>` +
+      `<span class="word">${r.word}</span>` +
+      `<span class="meter"><span style="width:${pct}%"></span></span>` +
+      `<span class="sim">${r.similarity.toFixed(3)}</span>`;
+    li.style.cursor = 'pointer';
+    li.addEventListener('click', () => { q.value = r.word; runSearch(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    ul.appendChild(li);
+  });
+}
+
+function live() { clearTimeout(debounce); debounce = setTimeout(runSearch, 200); }
+
+q.addEventListener('input', live);
+document.querySelectorAll('.examples code').forEach(c =>
+  c.addEventListener('click', () => { q.value = c.textContent; runSearch(); }));
+
+loadMeta();
+</script>
+</body>
+</html>

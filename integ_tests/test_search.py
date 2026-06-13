@@ -34,14 +34,14 @@ def test_search_index_no_filter():
     assert len(results["hits"]) == 4, f"Expected 4 results, got {len(results['hits'])}"
 
     expected_order = [3, 2, 1, 0]
-    assert (
-        results["hits"] == expected_order
-    ), f"Expected {expected_order}, got {results['hits']}"
+    assert results["hits"] == expected_order, (
+        f"Expected {expected_order}, got {results['hits']}"
+    )
 
     distances = results["distances"]
-    assert all(
-        earlier < later for earlier, later in zip(distances, distances[1:])
-    ), f"Distances not in increasing order: {distances}"
+    assert all(earlier < later for earlier, later in zip(distances, distances[1:])), (
+        f"Distances not in increasing order: {distances}"
+    )
 
 
 def test_search_index_with_filter():

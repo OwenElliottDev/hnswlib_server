@@ -222,6 +222,8 @@ void WriteAheadLog::writeHeader(FILE *f, const WalHeader &header) {
   off += 4;
   buf[off++] = static_cast<uint8_t>(header.spaceType);
   buf[off++] = static_cast<uint8_t>(header.vectorType);
+  std::memcpy(buf + off, &header.mrlScanDim, 4);
+  off += 4;
   // rest is zero-padded
 
   std::fseek(f, 0, SEEK_SET);
@@ -250,6 +252,8 @@ WalHeader WriteAheadLog::readHeader(FILE *f) {
   off += 4;
   h.spaceType = static_cast<WalSpaceType>(buf[off++]);
   h.vectorType = static_cast<WalVectorType>(buf[off++]);
+  std::memcpy(&h.mrlScanDim, buf + off, 4);
+  off += 4;
   return h;
 }
 
@@ -447,23 +451,7 @@ bool WriteAheadLog::tryCompact() {
   }
 
   size_t newSize = WAL_HEADER_SIZE;
-  {
-    uint8_t buf[WAL_HEADER_SIZE] = {};
-    size_t off = 0;
-    std::memcpy(buf + off, &header.magic, 4);
-    off += 4;
-    std::memcpy(buf + off, &header.version, 4);
-    off += 4;
-    std::memcpy(buf + off, &header.dimension, 4);
-    off += 4;
-    std::memcpy(buf + off, &header.M, 4);
-    off += 4;
-    std::memcpy(buf + off, &header.efConstruction, 4);
-    off += 4;
-    buf[off++] = static_cast<uint8_t>(header.spaceType);
-    buf[off++] = static_cast<uint8_t>(header.vectorType);
-    std::fwrite(buf, 1, WAL_HEADER_SIZE, cf);
-  }
+  writeHeader(cf, header);
 
   for (const auto &entry : survivors) {
     std::vector<uint8_t> payload;

@@ -36,9 +36,9 @@ def test_add_documents_with_metadata():
             "metadatas": metadatas,
         },
     )
-    assert (
-        response.status_code == 201
-    ), f"Failed to add documents with metadata: {response.text}"
+    assert response.status_code == 201, (
+        f"Failed to add documents with metadata: {response.text}"
+    )
 
 
 def test_delete_documents():

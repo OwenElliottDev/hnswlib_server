@@ -1,0 +1,8 @@
+# downloaded / generated datasets
+data/
+*.zip
+
+# python
+__pycache__/
+*.pyc
+.venv/

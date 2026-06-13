@@ -14,6 +14,8 @@ struct IndexRequest {
   std::string vectorType = "FLOAT32";    // "FLOAT32", "FLOAT16", or "BFLOAT16"
   int efConstruction = 512;              // default value for efConstruction
   int M = 16;                            // default value for M
+  int mrlScanDim = 0;                    // Matryoshka (MRL): build/scan the graph at this many leading
+                                         // dimensions while storing full vectors. 0 disables MRL.
 };
 
 inline void from_json(const nlohmann::json &j, IndexRequest &req) {
@@ -25,6 +27,7 @@ inline void from_json(const nlohmann::json &j, IndexRequest &req) {
   req.vectorType = j.value("vectorType", req.vectorType);
   req.efConstruction = j.value("efConstruction", req.efConstruction);
   req.M = j.value("M", req.M);
+  req.mrlScanDim = j.value("mrlScanDim", req.mrlScanDim);
 }
 
 struct AddDocumentsRequest {
@@ -148,6 +151,8 @@ struct SearchRequest {
   int efSearch = 512;          // default value
   std::string filter = "";     // filter string, default is empty (no filter)
   bool returnMetadata = false; // whether to return metadata or not, default is false
+  int rerankSize = 0;          // MRL only: rerank the best rerankSize scan-dim candidates at full
+                               // dimensionality and return the top k. 0 means no reranking.
 };
 
 inline void from_json(const nlohmann::json &j, SearchRequest &req) {
@@ -158,6 +163,7 @@ inline void from_json(const nlohmann::json &j, SearchRequest &req) {
   req.efSearch = j.value("efSearch", req.efSearch);
   req.filter = j.value("filter", req.filter);
   req.returnMetadata = j.value("returnMetadata", req.returnMetadata);
+  req.rerankSize = j.value("rerankSize", req.rerankSize);
 }
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DeleteDocumentsRequest, indexName, ids)
