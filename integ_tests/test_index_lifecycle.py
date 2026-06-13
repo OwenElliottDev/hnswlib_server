@@ -70,9 +70,9 @@ def test_delete_index_from_disk():
     assert disk_del.status_code == 200
 
     load_res = requests.post(f"{BASE_URL}/load_index", json={"indexName": name})
-    assert (
-        load_res.status_code == 404
-    ), f"Expected 404 after disk delete, got {load_res.status_code}"
+    assert load_res.status_code == 404, (
+        f"Expected 404 after disk delete, got {load_res.status_code}"
+    )
 
 
 def test_async_wal_replay():

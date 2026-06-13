@@ -49,9 +49,9 @@ def wait_for_replay_complete(name, timeout=30):
         assert res.status_code == 200, f"index_status failed: {res.text}"
         status = res.json()
         if not status.get("replayingWal", False):
-            assert (
-                "walReplayError" not in status
-            ), f"WAL replay error: {status['walReplayError']}"
+            assert "walReplayError" not in status, (
+                f"WAL replay error: {status['walReplayError']}"
+            )
             return status
         time.sleep(0.1)
     raise TimeoutError(f"WAL replay for '{name}' did not complete within {timeout}s")

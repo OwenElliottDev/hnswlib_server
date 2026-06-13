@@ -145,7 +145,9 @@ class TestArrayFilters:
 
     def test_in_and_contains_combined(self):
         """name in list AND has tag"""
-        results = self._search('name IN ["alice", "bob", "carol"] AND tags CONTAINS "rust"')
+        results = self._search(
+            'name IN ["alice", "bob", "carol"] AND tags CONTAINS "rust"'
+        )
         assert set(results["hits"]) == {0, 2}
 
     def test_contains_array_with_or(self):

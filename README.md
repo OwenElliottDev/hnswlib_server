@@ -71,11 +71,65 @@ The server supports multiple vector storage types to trade off precision for mem
 
 Set the `vectorType` field when creating an index. Vectors are always sent/received as FLOAT32 in the API and converted internally.
 
+### Geographic Distance
+
+The `GEODEGREES` space computes the great-circle (haversine) distance in **kilometers** between two `(latitude, longitude)` points given in degrees. It requires `dimension: 2` and `FLOAT32` vectors.
+
+```json
+{
+    "indexName": "places",
+    "dimension": 2,
+    "spaceType": "GEODEGREES"
+}
+```
+
+Vectors are `[latitude, longitude]` and search distances are returned in kilometers.
+
+### Matryoshka (MRL) Embeddings
+
+For [Matryoshka](https://arxiv.org/abs/2205.13147) embeddings the graph can be built and scanned using only the first `mrlScanDim` dimensions while full-dimensional vectors are still stored. This makes index construction and traversal cheaper, and queries can optionally rerank the best candidates at full dimensionality for accuracy.
+
+Set `mrlScanDim` (smaller than `dimension`) when creating the index:
+
+```json
+{
+    "indexName": "mrl_index",
+    "dimension": 768,
+    "spaceType": "IP",
+    "mrlScanDim": 192
+}
+```
+
+At query time, pass `rerankSize` to rerank the best `rerankSize` scan-dimension candidates using the full-dimension distance and return the top `k`:
+
+```json
+{
+    "indexName": "mrl_index",
+    "queryVector": [ ... 768 values ... ],
+    "k": 10,
+    "rerankSize": 100
+}
+```
+
+If `rerankSize` is `0` (or omitted), results are ranked using only the `mrlScanDim` dimensions. MRL is supported for the `L2` and `IP` spaces (and their `FLOAT16`/`BFLOAT16` variants).
+
+### Deletion
+
+`delete_documents` removes elements from the graph and repairs the surrounding neighborhood (delete-and-reconnect), rather than only marking them as deleted. This keeps query throughput from degrading as deletions accumulate. Freed slots are reused by subsequent `add_documents` calls, so the index does not grow unbounded under delete/insert churn.
+
 ### Write-Ahead Logging (WAL)
 
 All add and delete operations are logged to a write-ahead log for durability. When an index is loaded from disk, the WAL is replayed to recover any operations that occurred after the last save. The WAL automatically compacts when it exceeds 64MB.
 
 The fsync interval can be configured via the `WAL_FSYNC_INTERVAL_MS` environment variable (default: 1000ms).
+
+## Examples
+
+Runnable end-to-end demos live in [`examples/`](examples/):
+
+- [`word-search/`](examples/word-search/) — semantic word search over GloVe vectors stored as **bfloat16**, with a browser UI and vector arithmetic (`king - man + woman ≈ queen`).
+- [`airports-geo/`](examples/airports-geo/) — nearest-airport search over ~80k airports using the **`geodegrees`** space, with metadata filtering and an interactive Leaflet map.
+- [`wal-recovery/`](examples/wal-recovery/) — crash recovery that serves **live search traffic while the WAL replays** on a large index.
 
 ## Purpose
 
@@ -121,6 +175,16 @@ cmake ..
 make
 ```
 
+## Formatting
+
+`src/` is formatted with clang-format (`.clang-format`: LLVM, 140 cols); CI checks it. Globs are unquoted so the shell expands them.
+
+Format in place:
+
+```bash
+uv run clang-format -i src/*.cpp src/*.hpp
+```
+
 ## Running
 
 Run the server by executing the binary from the `build` directory:
@@ -163,7 +227,9 @@ Lists all currently loaded indices.
 
 ## `POST /create_index`
 
-Creates a new index with the given parameters. Valid `spaceType` values are `L2` and `IP`. If you want cosine similarity, use `IP` and unit normalize your vectors. Valid `vectorType` values are `FLOAT32` (default), `FLOAT16`, and `BFLOAT16`.
+Creates a new index with the given parameters. Valid `spaceType` values are `L2`, `IP`, and `GEODEGREES`. If you want cosine similarity, use `IP` and unit normalize your vectors. Valid `vectorType` values are `FLOAT32` (default), `FLOAT16`, and `BFLOAT16`.
+
+`mrlScanDim` (optional, default `0`) enables [Matryoshka (MRL)](#matryoshka-mrl-embeddings) embeddings: the graph is built and scanned using only the first `mrlScanDim` dimensions while full vectors are stored. It must be smaller than `dimension`.
 
 ### Request
 
@@ -175,13 +241,15 @@ Creates a new index with the given parameters. Valid `spaceType` values are `L2`
     "spaceType": "IP",
     "vectorType": "FLOAT32",
     "efConstruction": 200,
-    "M": 16
+    "M": 16,
+    "mrlScanDim": 0
 }
 ```
 
 ### Response
 
 - `201 Created`: Index created successfully.
+- `400 Bad Request`: Invalid configuration (e.g. `GEODEGREES` with `dimension != 2`, or `mrlScanDim >= dimension`).
 
 ## `POST /add_documents`
 
@@ -204,7 +272,7 @@ Adds documents to the index.
 
 ## `POST /search`
 
-Searches for the nearest neighbors of a query vector in the index. Set `returnMetadata` to `true` to include document metadata in the response.
+Searches for the nearest neighbors of a query vector in the index. Set `returnMetadata` to `true` to include document metadata in the response. For [MRL](#matryoshka-mrl-embeddings) indexes, set `rerankSize` to rerank the best `rerankSize` scan-dimension candidates at full dimensionality (ignored for non-MRL indexes).
 
 ### Request
 
@@ -215,7 +283,8 @@ Searches for the nearest neighbors of a query vector in the index. Set `returnMe
     "k": 5,
     "efSearch": 200,
     "filter": "",
-    "returnMetadata": false
+    "returnMetadata": false,
+    "rerankSize": 0
 }
 ```
 
@@ -225,7 +294,7 @@ Searches for the nearest neighbors of a query vector in the index. Set `returnMe
 
 ## `DELETE /delete_documents`
 
-Deletes documents from an index by their IDs.
+Deletes documents from an index by their IDs. Elements are removed from the graph and the surrounding neighborhood is repaired (delete-and-reconnect); freed slots are reused by later `add_documents` calls. Deleting an ID that is not present is a no-op.
 
 ### Request
 
@@ -334,7 +403,7 @@ Integration tests are located in the `integ_tests` directory. You can run them u
 uv sync --dev
 ```
 
-With HNSWLiv server running, you can execute the integration tests:
+With HNSWLib server running, you can execute the integration tests:
 
 ```bash
 uv run pytest
