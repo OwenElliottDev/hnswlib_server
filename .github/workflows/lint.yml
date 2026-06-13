@@ -23,6 +23,6 @@ jobs:
       - name: Check C++ formatting (src/)
         run: uv run clang-format --dry-run --Werror src/*.cpp src/*.hpp
       
-      - name: Check C++ formatting (src/)
+      - name: Check Python code formatting (tests and examples)
         run: uv run ruff check
 
