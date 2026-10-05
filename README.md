@@ -55,7 +55,9 @@ Filtering supports grouping with parentheses, the following operators are suppor
 
 Comparison operators: `=`, `!=`, `>`, `<`, `>=`, `<=`.
 
-Logical operators: `AND`, `OR`, `NOT`.
+Logical operators: `AND`, `OR`, `NOT`. `NOT` binds tightest, then `AND`, then `OR`, so `a = 1 OR b = 2 AND c = 3` means `a = 1 OR (b = 2 AND c = 3)`. `NOT` applies to a single comparison or a parenthesised group: `NOT (city = "boston" OR city = "chicago")`.
+
+Numbers can be negative (`temp > -5`, `delta IN [-1.5, 2.5]`). Integer and float literals are compared only against values of the same type: `price > 5` matches integer prices and `price > 5.0` matches float prices. Keep each numeric field a single type and write the literal to match.
 
 `IN` - checks if a field value matches any value in an array: `name IN ["alice", "bob"]`.
 

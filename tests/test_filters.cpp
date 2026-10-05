@@ -259,3 +259,136 @@ TEST(FilterTest, TestASTConstructionWithGroup) {
     ASSERT_EQ(ast->right->filter.type, "=");
     ASSERT_EQ(std::get<std::string>(ast->right->filter.value), "Alice");
 }
+
+TEST(FilterTest, TestAndBindsTighterThanOr) {
+    auto ast = parseFilters("a = 1 OR b = 2 AND c = 3");
+
+    ASSERT_EQ(ast->type, NodeType::BooleanOp);
+    ASSERT_EQ(ast->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->left->type, NodeType::Comparison);
+    ASSERT_EQ(ast->left->filter.field, "a");
+    ASSERT_EQ(ast->right->type, NodeType::BooleanOp);
+    ASSERT_EQ(ast->right->booleanOp, BooleanOp::And);
+    ASSERT_EQ(ast->right->left->filter.field, "b");
+    ASSERT_EQ(ast->right->right->filter.field, "c");
+}
+
+TEST(FilterTest, TestAndBindsTighterThanOrOnLeft) {
+    auto ast = parseFilters("a = 1 AND b = 2 OR c = 3");
+
+    ASSERT_EQ(ast->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->left->booleanOp, BooleanOp::And);
+    ASSERT_EQ(ast->left->left->filter.field, "a");
+    ASSERT_EQ(ast->left->right->filter.field, "b");
+    ASSERT_EQ(ast->right->filter.field, "c");
+}
+
+TEST(FilterTest, TestSameOperatorIsLeftAssociative) {
+    auto ast = parseFilters("a = 1 OR b = 2 OR c = 3");
+
+    ASSERT_EQ(ast->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->left->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->left->left->filter.field, "a");
+    ASSERT_EQ(ast->left->right->filter.field, "b");
+    ASSERT_EQ(ast->right->filter.field, "c");
+}
+
+TEST(FilterTest, TestNotBindsTighterThanAnd) {
+    auto ast = parseFilters("NOT a = 1 AND b = 2");
+
+    ASSERT_EQ(ast->booleanOp, BooleanOp::And);
+    ASSERT_EQ(ast->left->type, NodeType::Not);
+    ASSERT_EQ(ast->left->child->filter.field, "a");
+    ASSERT_EQ(ast->right->filter.field, "b");
+}
+
+TEST(FilterTest, TestNotAppliesToGroup) {
+    auto ast = parseFilters("NOT (a = 1 OR b = 2)");
+
+    ASSERT_EQ(ast->type, NodeType::Not);
+    ASSERT_EQ(ast->child->type, NodeType::BooleanOp);
+    ASSERT_EQ(ast->child->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->child->left->filter.field, "a");
+    ASSERT_EQ(ast->child->right->filter.field, "b");
+}
+
+TEST(FilterTest, TestDoubleNot) {
+    auto ast = parseFilters("NOT NOT a = 1");
+
+    ASSERT_EQ(ast->type, NodeType::Not);
+    ASSERT_EQ(ast->child->type, NodeType::Not);
+    ASSERT_EQ(ast->child->child->filter.field, "a");
+}
+
+TEST(FilterTest, TestNestedGroups) {
+    auto ast = parseFilters("((a = 1 OR b = 2) AND (c = 3 OR NOT d = 4))");
+
+    ASSERT_EQ(ast->booleanOp, BooleanOp::And);
+    ASSERT_EQ(ast->left->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->right->booleanOp, BooleanOp::Or);
+    ASSERT_EQ(ast->right->right->type, NodeType::Not);
+}
+
+TEST(FilterTest, TestNegativeNumbers) {
+    auto ast = parseFilters("a > -1 AND b <= -2.5");
+
+    ASSERT_EQ(std::get<long>(ast->left->filter.value), -1);
+    ASSERT_DOUBLE_EQ(std::get<double>(ast->right->filter.value), -2.5);
+}
+
+TEST(FilterTest, TestNegativeArrays) {
+    auto longs = parseFilters("a IN [-1, 2, -3]");
+    std::vector<long> expectedLongs = {-1, 2, -3};
+    ASSERT_EQ(std::get<std::vector<long>>(longs->filter.value), expectedLongs);
+
+    auto doubles = parseFilters("a IN [-1.5, 2.5]");
+    std::vector<double> expectedDoubles = {-1.5, 2.5};
+    ASSERT_EQ(std::get<std::vector<double>>(doubles->filter.value), expectedDoubles);
+}
+
+TEST(FilterTest, TestEmptyFilterHasNoAst) {
+    ASSERT_EQ(parseFilters(""), nullptr);
+    ASSERT_EQ(parseFilters("   "), nullptr);
+}
+
+TEST(FilterTest, TestMalformedFiltersThrow) {
+    const std::vector<std::string> malformed = {
+        "a",
+        "a =",
+        "a = 1 AND",
+        "a = 1 OR",
+        "NOT",
+        "NOT NOT",
+        "(a = 1",
+        "a = 1)",
+        "()",
+        "(",
+        ")",
+        "AND a = 1",
+        "a = 1 b = 2",
+        "a = 1 NOT b = 2",
+        "= 1",
+        "a = b",
+        "a 1",
+        "NOT (a = 1",
+    };
+    for (const auto &filter : malformed) {
+        EXPECT_THROW(parseFilters(filter), std::runtime_error) << filter;
+    }
+}
+
+TEST(FilterTest, TestDeepNestingIsRejected) {
+    std::string deepParens = std::string(100000, '(') + "a = 1" + std::string(100000, ')');
+    EXPECT_THROW(parseFilters(deepParens), std::runtime_error);
+
+    std::string deepNots;
+    for (int i = 0; i < 100000; i++) {
+        deepNots += "NOT ";
+    }
+    EXPECT_THROW(parseFilters(deepNots + "a = 1"), std::runtime_error);
+
+    std::string allowed = std::string(100, '(') + "a = 1" + std::string(100, ')');
+    EXPECT_NO_THROW(parseFilters(allowed));
+    EXPECT_NO_THROW(parseFilters("a = 1"));
+}
+

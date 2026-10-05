@@ -5,12 +5,12 @@
 const std::regex LPAREN(R"(\()");
 const std::regex RPAREN(R"(\))");
 const std::regex STRING("\"([^\"]*)\"");
-const std::regex LONG(R"(\d+)");
-const std::regex DOUBLE(R"(\d+\.\d+)");
+const std::regex LONG(R"(-?\d+)");
+const std::regex DOUBLE(R"(-?\d+\.\d+)");
 const std::regex ARRAY_STRING(R"xxx(\["([^"]*)"(?:,\s*"([^"]*)")*\])xxx");
-const std::regex ARRAY_LONG(R"(\[(\d+)(?:,\s*(\d+))*\])");
-const std::regex ARRAY_DOUBLE(R"(\[(\d+\.\d+)(?:,\s*(\d+\.\d+))*\])");
-const std::regex ARRAY_ELEMENT(R"xxx("([^"]*)"|(\d+\.\d+)|(\d+))xxx");
+const std::regex ARRAY_LONG(R"(\[(-?\d+)(?:,\s*(-?\d+))*\])");
+const std::regex ARRAY_DOUBLE(R"(\[(-?\d+\.\d+)(?:,\s*(-?\d+\.\d+))*\])");
+const std::regex ARRAY_ELEMENT(R"xxx("([^"]*)"|(-?\d+\.\d+)|(-?\d+))xxx");
 const std::regex COMPARATOR(R"(!=|>=|<=|=|>|<|IN|CONTAINS)");
 const std::regex BOOLEAN_OP(R"(AND|OR|NOT)");
 const std::regex IDENTIFIER(R"(\w+)");
@@ -205,68 +205,99 @@ std::vector<Token> tokenize(const std::string &filterString) {
   return tokens;
 }
 
-std::shared_ptr<FilterASTNode> parseTerm(int &index, const std::vector<Token> &tokens) {
-  if (index >= tokens.size()) {
-    return nullptr;
-  }
+static constexpr int MAX_FILTER_DEPTH = 128;
+static thread_local int filterDepth = 0;
 
-  std::shared_ptr<FilterASTNode> astNode;
-
-  if (tokens[index].type == "LPAREN") {
-    index++;
-    astNode = parseExpression(index, tokens);
-    if (tokens[index].type != "RPAREN") {
-      throw std::runtime_error("Expected closing parenthesis at index " + std::to_string(index) +
-                               " instead we found: " + tokens[index].value);
+struct DepthGuard {
+  DepthGuard() {
+    if (++filterDepth > MAX_FILTER_DEPTH) {
+      --filterDepth;
+      throw std::runtime_error("Filter string is nested too deeply (limit " + std::to_string(MAX_FILTER_DEPTH) + ")");
     }
+  }
+  ~DepthGuard() { --filterDepth; }
+};
+
+static const Token &tokenAt(int index, const std::vector<Token> &tokens, const std::string &expected) {
+  if (index < 0 || static_cast<size_t>(index) >= tokens.size()) {
+    throw std::runtime_error("Unexpected end of filter string, expected " + expected);
+  }
+  return tokens[index];
+}
+
+static bool isBooleanOp(int index, const std::vector<Token> &tokens, const std::string &op) {
+  return static_cast<size_t>(index) < tokens.size() && tokens[index].type == "BOOLEAN_OP" && tokens[index].value == op;
+}
+
+static std::shared_ptr<FilterASTNode> parseAndExpression(int &index, const std::vector<Token> &tokens) {
+  auto astNode = parseTerm(index, tokens);
+  while (isBooleanOp(index, tokens, "AND")) {
     index++;
-  } else {
-    astNode = parseFactor(index, tokens);
+    auto right = parseTerm(index, tokens);
+    astNode = std::make_shared<FilterASTNode>(BooleanOp::And, astNode, right);
   }
   return astNode;
 }
 
-std::shared_ptr<FilterASTNode> parseFactor(int &index, const std::vector<Token> &tokens) {
-  if (index >= tokens.size()) {
-    return nullptr;
-  }
+std::shared_ptr<FilterASTNode> parseTerm(int &index, const std::vector<Token> &tokens) {
+  DepthGuard guard;
+  const Token &token = tokenAt(index, tokens, "a comparison, NOT or (");
 
-  if (tokens[index].type == "BOOLEAN_OP" && tokens[index].value == "NOT") {
+  if (token.type == "BOOLEAN_OP" && token.value == "NOT") {
     index++;
-    auto child = parseFactor(index, tokens);
+    auto child = parseTerm(index, tokens);
     return std::make_shared<FilterASTNode>(NodeType::Not, child);
   }
 
-  if (tokens[index].type == "IDENTIFIER") {
-    auto field = tokens[index].value;
+  if (token.type == "LPAREN") {
     index++;
-    if (tokens[index].type != "COMPARATOR") {
-      throw std::runtime_error("Expected a comparator after an identifier. After identifier: " + tokens[index - 1].value +
-                               " found: " + tokens[index].value);
+    auto astNode = parseExpression(index, tokens);
+    const Token &closing = tokenAt(index, tokens, ")");
+    if (closing.type != "RPAREN") {
+      throw std::runtime_error("Expected closing parenthesis at index " + std::to_string(index) + " instead we found: " + closing.value);
     }
-    auto op = tokens[index].value;
     index++;
-    FieldValue convertedValue = convertType(tokens[index].value, tokens[index].type);
-    index++;
-    return std::make_shared<FilterASTNode>(Filter{field, op, convertedValue});
+    return astNode;
   }
-  throw std::runtime_error("Syntax error in filter string");
+
+  return parseFactor(index, tokens);
+}
+
+std::shared_ptr<FilterASTNode> parseFactor(int &index, const std::vector<Token> &tokens) {
+  const Token &fieldToken = tokenAt(index, tokens, "a field name");
+  if (fieldToken.type != "IDENTIFIER") {
+    throw std::runtime_error("Syntax error in filter string: expected a field name, found: " + fieldToken.value);
+  }
+  index++;
+
+  const Token &opToken = tokenAt(index, tokens, "a comparator after " + fieldToken.value);
+  if (opToken.type != "COMPARATOR") {
+    throw std::runtime_error("Expected a comparator after an identifier. After identifier: " + fieldToken.value +
+                             " found: " + opToken.value);
+  }
+  index++;
+
+  const Token &valueToken = tokenAt(index, tokens, "a value after " + fieldToken.value + " " + opToken.value);
+  FieldValue convertedValue = convertType(valueToken.value, valueToken.type);
+  index++;
+  return std::make_shared<FilterASTNode>(Filter{fieldToken.value, opToken.value, convertedValue});
 }
 
 std::shared_ptr<FilterASTNode> parseExpression(int &index, const std::vector<Token> &tokens) {
-  auto astNode = parseTerm(index, tokens);
-  while (index < tokens.size() && tokens[index].type == "BOOLEAN_OP" && tokens[index].value != "NOT") {
-    auto op = tokens[index].value == "AND" ? BooleanOp::And : BooleanOp::Or;
+  auto astNode = parseAndExpression(index, tokens);
+  while (isBooleanOp(index, tokens, "OR")) {
     index++;
-    auto right = parseTerm(index, tokens);
-    astNode = std::make_shared<FilterASTNode>(op, astNode, right);
+    auto right = parseAndExpression(index, tokens);
+    astNode = std::make_shared<FilterASTNode>(BooleanOp::Or, astNode, right);
   }
-  // index++;
   return astNode;
 }
 
 std::shared_ptr<FilterASTNode> parseFilters(const std::string &filterString) {
   auto tokens = tokenize(filterString);
+  if (tokens.empty()) {
+    return nullptr;
+  }
 
   int index = 0;
   auto astNode = parseExpression(index, tokens);
