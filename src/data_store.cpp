@@ -1,7 +1,9 @@
 #include "data_store.hpp"
 #include <algorithm>
 #include <climits>
+#include <cstdint>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <typeindex>
 
@@ -351,16 +353,45 @@ Facets DataStore::get_facets(const std::vector<int> &ids) {
 }
 
 namespace {
+// On-disk sizes and integers are fixed-width (uint64/int64) so .data files are
+// identical between 64-bit hosts and wasm32, where size_t and long are 4 bytes.
+// On LP64 platforms this is byte-for-byte the same as the original size_t/long layout.
+void writeSize(std::ostream &out, size_t size) {
+  uint64_t v = static_cast<uint64_t>(size);
+  out.write(reinterpret_cast<const char *>(&v), sizeof(v));
+}
+
+size_t readSize(std::istream &in) {
+  uint64_t v = 0;
+  in.read(reinterpret_cast<char *>(&v), sizeof(v));
+  if (v > std::numeric_limits<size_t>::max()) {
+    throw std::runtime_error("Size in data file exceeds platform limits");
+  }
+  return static_cast<size_t>(v);
+}
+
+void writeLong(std::ostream &out, long value) {
+  int64_t v = static_cast<int64_t>(value);
+  out.write(reinterpret_cast<const char *>(&v), sizeof(v));
+}
+
+long readLong(std::istream &in) {
+  int64_t v = 0;
+  in.read(reinterpret_cast<char *>(&v), sizeof(v));
+  if (v < std::numeric_limits<long>::min() || v > std::numeric_limits<long>::max()) {
+    throw std::runtime_error("Integer metadata value " + std::to_string(v) + " does not fit in this platform's long");
+  }
+  return static_cast<long>(v);
+}
+
 void serializeFieldValue(std::ofstream &outFile, const FieldValue &value) {
   int index = value.index();
   outFile.write(reinterpret_cast<const char *>(&index), sizeof(index));
 
   switch (index) {
   case 0: // long
-  {
-    long v = std::get<long>(value);
-    outFile.write(reinterpret_cast<const char *>(&v), sizeof(v));
-  } break;
+    writeLong(outFile, std::get<long>(value));
+    break;
   case 1: // double
   {
     double v = std::get<double>(value);
@@ -369,24 +400,21 @@ void serializeFieldValue(std::ofstream &outFile, const FieldValue &value) {
   case 2: // std::string
   {
     const std::string &str = std::get<std::string>(value);
-    size_t size = str.size();
-    outFile.write(reinterpret_cast<const char *>(&size), sizeof(size));
-    outFile.write(str.data(), size);
+    writeSize(outFile, str.size());
+    outFile.write(str.data(), str.size());
   } break;
   case 3: // vector<long>
   {
     const auto &arr = std::get<std::vector<long>>(value);
-    size_t count = arr.size();
-    outFile.write(reinterpret_cast<const char *>(&count), sizeof(count));
+    writeSize(outFile, arr.size());
     for (const auto &v : arr) {
-      outFile.write(reinterpret_cast<const char *>(&v), sizeof(v));
+      writeLong(outFile, v);
     }
   } break;
   case 4: // vector<double>
   {
     const auto &arr = std::get<std::vector<double>>(value);
-    size_t count = arr.size();
-    outFile.write(reinterpret_cast<const char *>(&count), sizeof(count));
+    writeSize(outFile, arr.size());
     for (const auto &v : arr) {
       outFile.write(reinterpret_cast<const char *>(&v), sizeof(v));
     }
@@ -394,12 +422,10 @@ void serializeFieldValue(std::ofstream &outFile, const FieldValue &value) {
   case 5: // vector<string>
   {
     const auto &arr = std::get<std::vector<std::string>>(value);
-    size_t count = arr.size();
-    outFile.write(reinterpret_cast<const char *>(&count), sizeof(count));
+    writeSize(outFile, arr.size());
     for (const auto &s : arr) {
-      size_t len = s.size();
-      outFile.write(reinterpret_cast<const char *>(&len), sizeof(len));
-      outFile.write(s.data(), len);
+      writeSize(outFile, s.size());
+      outFile.write(s.data(), s.size());
     }
   } break;
   default:
@@ -413,11 +439,7 @@ FieldValue deserializeFieldValue(std::ifstream &inFile) {
 
   switch (index) {
   case 0: // long
-  {
-    long v;
-    inFile.read(reinterpret_cast<char *>(&v), sizeof(v));
-    return v;
-  }
+    return readLong(inFile);
   case 1: // double
   {
     double v;
@@ -426,26 +448,23 @@ FieldValue deserializeFieldValue(std::ifstream &inFile) {
   }
   case 2: // std::string
   {
-    size_t size;
-    inFile.read(reinterpret_cast<char *>(&size), sizeof(size));
+    size_t size = readSize(inFile);
     std::string str(size, '\0');
     inFile.read(&str[0], size);
     return str;
   }
   case 3: // vector<long>
   {
-    size_t count;
-    inFile.read(reinterpret_cast<char *>(&count), sizeof(count));
+    size_t count = readSize(inFile);
     std::vector<long> arr(count);
     for (size_t i = 0; i < count; ++i) {
-      inFile.read(reinterpret_cast<char *>(&arr[i]), sizeof(long));
+      arr[i] = readLong(inFile);
     }
     return arr;
   }
   case 4: // vector<double>
   {
-    size_t count;
-    inFile.read(reinterpret_cast<char *>(&count), sizeof(count));
+    size_t count = readSize(inFile);
     std::vector<double> arr(count);
     for (size_t i = 0; i < count; ++i) {
       inFile.read(reinterpret_cast<char *>(&arr[i]), sizeof(double));
@@ -454,12 +473,10 @@ FieldValue deserializeFieldValue(std::ifstream &inFile) {
   }
   case 5: // vector<string>
   {
-    size_t count;
-    inFile.read(reinterpret_cast<char *>(&count), sizeof(count));
+    size_t count = readSize(inFile);
     std::vector<std::string> arr(count);
     for (size_t i = 0; i < count; ++i) {
-      size_t len;
-      inFile.read(reinterpret_cast<char *>(&len), sizeof(len));
+      size_t len = readSize(inFile);
       arr[i].resize(len);
       inFile.read(&arr[i][0], len);
     }
@@ -477,18 +494,15 @@ void DataStore::serialize(const std::string &filename) {
     throw std::runtime_error("Failed to open file for serialization.");
   }
 
-  size_t recordCount = data.size();
-  outFile.write(reinterpret_cast<const char *>(&recordCount), sizeof(recordCount));
+  writeSize(outFile, data.size());
 
   for (const auto &[id, record] : data) {
     outFile.write(reinterpret_cast<const char *>(&id), sizeof(id));
-    size_t fieldCount = record.size();
-    outFile.write(reinterpret_cast<const char *>(&fieldCount), sizeof(fieldCount));
+    writeSize(outFile, record.size());
 
     for (const auto &[field, value] : record) {
-      size_t fieldLength = field.size();
-      outFile.write(reinterpret_cast<const char *>(&fieldLength), sizeof(fieldLength));
-      outFile.write(field.data(), fieldLength);
+      writeSize(outFile, field.size());
+      outFile.write(field.data(), field.size());
 
       // Serialize the FieldValue object
       serializeFieldValue(outFile, value);
@@ -504,20 +518,17 @@ void DataStore::deserialize(const std::string &filename) {
     throw std::runtime_error("Failed to open file for deserialization.");
   }
 
-  size_t recordCount;
-  inFile.read(reinterpret_cast<char *>(&recordCount), sizeof(recordCount));
+  size_t recordCount = readSize(inFile);
 
   for (size_t i = 0; i < recordCount; ++i) {
     int id;
     inFile.read(reinterpret_cast<char *>(&id), sizeof(id));
 
-    size_t fieldCount;
-    inFile.read(reinterpret_cast<char *>(&fieldCount), sizeof(fieldCount));
+    size_t fieldCount = readSize(inFile);
 
     std::map<std::string, FieldValue> record;
     for (size_t j = 0; j < fieldCount; ++j) {
-      size_t fieldLength;
-      inFile.read(reinterpret_cast<char *>(&fieldLength), sizeof(fieldLength));
+      size_t fieldLength = readSize(inFile);
 
       std::string field(fieldLength, '\0');
       inFile.read(field.data(), fieldLength);

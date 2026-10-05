@@ -123,12 +123,23 @@ All add and delete operations are logged to a write-ahead log for durability. Wh
 
 The fsync interval can be configured via the `WAL_FSYNC_INTERVAL_MS` environment variable (default: 1000ms).
 
+### In-Browser / Edge Search (WebAssembly)
+
+The index and filtering engine also compile to WebAssembly, so an index saved by the server can be loaded and searched directly in a browser, Web Worker, Node, Deno or edge runtime with no HTTP round trips. It reads and writes the server's index files in both directions and supports the same spaces, vector types, filters and document mutations (without the WAL). See [`wasm/README.md`](wasm/README.md).
+
+```js
+import { VectorIndex } from './hnswlib-edge.mjs';
+const index = await VectorIndex.fromUrl('https://cdn.example.com/indices', 'products');
+const { hits, metadatas } = index.search(queryVector, { k: 10, filter: 'category = "shoes"', returnMetadata: true });
+```
+
 ## Examples
 
 Runnable end-to-end demos live in [`examples/`](examples/):
 
 - [`word-search/`](examples/word-search/) — semantic word search over GloVe vectors stored as **bfloat16**, with a browser UI and vector arithmetic (`king - man + woman ≈ queen`).
 - [`airports-geo/`](examples/airports-geo/) — nearest-airport search over ~80k airports using the **`geodegrees`** space, with metadata filtering and an interactive Leaflet map.
+- [`airports-edge/`](examples/airports-edge/) — the airports demo running **entirely in the browser** on the WebAssembly build, loading the server's saved index.
 - [`wal-recovery/`](examples/wal-recovery/) — crash recovery that serves **live search traffic while the WAL replays** on a large index.
 
 ## Purpose
