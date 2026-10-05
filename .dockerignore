@@ -15,3 +15,6 @@ uv.lock
 .gitmodules
 Dockerfile
 .python-version
+build-wasm/
+wasm/dist/
+.cache/

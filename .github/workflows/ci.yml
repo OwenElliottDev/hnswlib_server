@@ -33,3 +33,44 @@ jobs:
           ./build/test_filters
           ./build/test_data_store
           ./build/test_save_load
+
+  wasm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: 6.0.11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build wasm
+        run: ./wasm/build.sh
+
+      - name: Run wasm unit tests
+        run: node --test wasm/test/test.mjs
+
+      - name: Build server
+        run: |
+          cmake -B build -S .
+          cmake --build build --target server -j $(nproc)
+
+      - name: Server <-> wasm compatibility
+        run: |
+          ./build/bin/server &
+          for i in $(seq 1 30); do curl -sf localhost:8685/health && break; sleep 1; done
+          node wasm/test/compat.mjs
