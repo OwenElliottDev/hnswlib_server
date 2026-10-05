@@ -78,7 +78,19 @@ void DataStore::filterByType(DynamicBitset &result, const std::string &field, co
 
 void DataStore::set(int id, std::map<std::string, FieldValue> record) {
   std::lock_guard<std::mutex> lock(mutex);
+  
+  auto existing = data.find(id);
+  if (existing != data.end()) {
+    for (const auto &[field, value] : existing->second) {
+      forEachIndexEntry(value, [&](const FieldValue &entry) {
+        auto &vec = fieldIndex[field][entry];
+        vec.erase(std::remove(vec.begin(), vec.end(), id), vec.end());
+      });
+    }
+  }
+
   data[id] = std::move(record);
+
   if (static_cast<size_t>(id) >= maxId_) {
     maxId_ = static_cast<size_t>(id);
   }
