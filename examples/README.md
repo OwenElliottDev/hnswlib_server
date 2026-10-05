@@ -26,6 +26,7 @@ recovery demo starts and stops its own container (image via `HNSW_IMAGE`).
 | --- | --- |
 | [`word-search/`](word-search/) | Semantic word search over GloVe vectors stored as **bfloat16**, with cosine similarity (IP space) and vector arithmetic (`king - man + woman ≈ queen`). Browser UI. |
 | [`airports-geo/`](airports-geo/) | Nearest-airport search over ~80k airports using the **`geodegrees`** space (great-circle km), with metadata **filtering** by type/country/name/elevation. Interactive Leaflet map. |
+| [`airports-edge/`](airports-edge/) | The airports demo running **entirely in the browser**: the saved index is loaded into the [WebAssembly build](../wasm/) and searched locally, with no server at query time. |
 | [`wal-recovery/`](wal-recovery/) | Crash recovery via the **write-ahead log**: kill a large index, then serve **live search traffic while the WAL replays** in the background. |
 
 Each example downloads its own data into a local `data/` folder (gitignored) on
