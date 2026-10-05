@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(HNSWLibServer)
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/VERSION HNSWLIB_VERSION LIMIT_COUNT 1)
+project(HNSWLibServer VERSION ${HNSWLIB_VERSION})
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/VERSION)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +30,7 @@ else()
 endif()
 
 add_executable(server src/server.cpp src/data_store.cpp src/filters.cpp src/wal.cpp)
+target_compile_definitions(server PRIVATE HNSWLIB_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(server PRIVATE
     external/crow/include

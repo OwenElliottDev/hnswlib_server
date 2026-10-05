@@ -1,0 +1,52 @@
+name: Publish WASM
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Check tag matches VERSION
+        run: |
+          VERSION="$(head -n1 VERSION | tr -d '[:space:]')"
+          if [ "${{ github.ref_name }}" != "v${VERSION}" ]; then
+            echo "Tag ${{ github.ref_name }} does not match VERSION file (${VERSION})" >&2
+            exit 1
+          fi
+
+      - uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: 6.0.11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: ./wasm/build.sh
+
+      - run: node --test wasm/test/test.mjs
+
+      - name: Publish to wasm-dist branch with version tag
+        run: |
+          VERSION=${{ github.ref_name }}
+          DIST="$(mktemp -d)"
+          cp wasm/dist/hnswlib-edge.mjs wasm/dist/hnswlib-edge.d.ts wasm/dist/hnswlib_edge.mjs wasm/dist/hnswlib_edge.wasm "$DIST"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan wasm-dist
+          git rm -rf --quiet .
+          cp "$DIST"/* .
+          git add hnswlib-edge.mjs hnswlib-edge.d.ts hnswlib_edge.mjs hnswlib_edge.wasm
+          git commit -m "WASM build ${VERSION}"
+          git tag "wasm-${VERSION}"
+          git push -f origin wasm-dist
+          git push origin "wasm-${VERSION}"

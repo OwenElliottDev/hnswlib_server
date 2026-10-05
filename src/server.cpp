@@ -2,6 +2,7 @@
 #include "data_store.hpp"
 #include "filters.hpp"
 #include "hnswlib/hnswlib.h"
+#include "index_utils.hpp"
 #include "models.hpp"
 #include "nlohmann/json.hpp"
 #include "wal.hpp"
@@ -21,7 +22,6 @@
 #define DEFAULT_INDEX_SIZE 100000
 #define DEFAULT_INDEX_RESIZE_HEADROOM 10000
 #define INDEX_GROWTH_FACTOR 2.0
-#define EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD 0.1
 
 struct UtcTime {
   friend std::ostream &operator<<(std::ostream &os, const UtcTime &) {
@@ -125,60 +125,6 @@ std::shared_ptr<IndexContext> getContext(const std::string &indexName) {
   return it->second;
 }
 
-hnswlib::SpaceInterface<float> *create_base_space(const std::string &spaceType, const std::string &vectorType, int dim) {
-  // geodegrees is great-circle distance over (lat, lon) in float32; it ignores vectorType
-  if (spaceType == "GEODEGREES") {
-    return new hnswlib::GeoDegreesSpace(dim);
-  }
-  if (vectorType == "FLOAT16") {
-    if (spaceType == "IP")
-      return new hnswlib::InnerProductFloat16Space(dim);
-    return new hnswlib::L2Float16Space(dim);
-  } else if (vectorType == "BFLOAT16") {
-    if (spaceType == "IP")
-      return new hnswlib::InnerProductBFloat16Space(dim);
-    return new hnswlib::L2BFloat16Space(dim);
-  } else {
-    if (spaceType == "IP")
-      return new hnswlib::InnerProductSpace(dim);
-    return new hnswlib::L2Space(dim);
-  }
-}
-
-// Result of building an index's metric space. For MRL indexes the space is an
-// MrlSpace and the full-dimension distance function is exposed for reranking.
-struct BuiltSpace {
-  hnswlib::SpaceInterface<float> *space = nullptr;
-  bool isMrl = false;
-  hnswlib::DISTFUNC<float> fullDistFunc = nullptr;
-  void *fullDistFuncParam = nullptr;
-};
-
-// Builds the metric space for an index, wrapping it in an MrlSpace when mrlScanDim > 0.
-// Throws std::runtime_error on invalid configuration (e.g. geodegrees dim != 2,
-// or mrlScanDim >= dim).
-BuiltSpace build_space(const std::string &spaceType, const std::string &vectorType, int dim, int mrlScanDim) {
-  BuiltSpace bs;
-  if (mrlScanDim > 0) {
-    if (spaceType == "GEODEGREES") {
-      throw std::runtime_error("MRL is not supported for the geodegrees space");
-    }
-    if (mrlScanDim >= dim) {
-      throw std::runtime_error("mrlScanDim must be smaller than dimension");
-    }
-    auto *scanSpace = create_base_space(spaceType, vectorType, mrlScanDim);
-    auto *fullSpace = create_base_space(spaceType, vectorType, dim);
-    auto *mrl = new hnswlib::MrlSpace(scanSpace, fullSpace);
-    bs.space = mrl;
-    bs.isMrl = true;
-    bs.fullDistFunc = mrl->get_full_dist_func();
-    bs.fullDistFuncParam = mrl->get_full_dist_func_param();
-  } else {
-    bs.space = create_base_space(spaceType, vectorType, dim);
-  }
-  return bs;
-}
-
 std::string wal_space_to_string(WalSpaceType spaceType) {
   switch (spaceType) {
   case WalSpaceType::L2:
@@ -196,46 +142,6 @@ std::string get_vector_type(const std::shared_ptr<IndexContext> &ctx) {
   }
   return "FLOAT32";
 }
-
-std::vector<uint16_t> floats_to_f16(const std::vector<float> &vec) {
-  std::vector<uint16_t> result(vec.size());
-  for (size_t i = 0; i < vec.size(); i++) {
-    result[i] = hnswlib::float_to_half(vec[i]);
-  }
-  return result;
-}
-
-std::vector<uint16_t> floats_to_bf16(const std::vector<float> &vec) {
-  std::vector<uint16_t> result(vec.size());
-  for (size_t i = 0; i < vec.size(); i++) {
-    result[i] = hnswlib::float_to_bfloat16(vec[i]);
-  }
-  return result;
-}
-
-std::vector<float> f16_to_floats(const std::vector<uint16_t> &vec) {
-  std::vector<float> result(vec.size());
-  for (size_t i = 0; i < vec.size(); i++) {
-    result[i] = hnswlib::half_to_float(vec[i]);
-  }
-  return result;
-}
-
-std::vector<float> bf16_to_floats(const std::vector<uint16_t> &vec) {
-  std::vector<float> result(vec.size());
-  for (size_t i = 0; i < vec.size(); i++) {
-    result[i] = hnswlib::bfloat16_to_float(vec[i]);
-  }
-  return result;
-}
-
-// functor to filter results with a bitset of IDs
-class FilterIdsInSet : public hnswlib::BaseFilterFunctor {
-public:
-  const DynamicBitset &ids;
-  FilterIdsInSet(const DynamicBitset &ids) : ids(ids) {}
-  bool operator()(hnswlib::labeltype label_id) { return ids.test(label_id); }
-};
 
 WalHeader makeWalHeader(const nlohmann::json &settings) {
   WalHeader h;
@@ -320,18 +226,6 @@ std::shared_ptr<IndexContext> read_index_from_disk(const std::string &indexName)
   ctx->mrlFullDistFunc = bs.fullDistFunc;
   ctx->mrlFullDistFuncParam = bs.fullDistFuncParam;
   return ctx;
-}
-
-void addPointToIndex(hnswlib::HierarchicalNSW<float> *index, const std::string &vectorType, int id, const std::vector<float> &vec) {
-  if (vectorType == "FLOAT16") {
-    auto converted = floats_to_f16(vec);
-    index->addPoint(converted.data(), id, true);
-  } else if (vectorType == "BFLOAT16") {
-    auto converted = floats_to_bf16(vec);
-    index->addPoint(converted.data(), id, true);
-  } else {
-    index->addPoint(vec.data(), id, true);
-  }
 }
 
 void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string &indexName, size_t newMaxElements) {
@@ -521,7 +415,7 @@ int main() {
 
   CROW_ROUTE(app, "/version").methods(crow::HTTPMethod::GET)([]() {
     nlohmann::json response;
-    response["version"] = "0.3.0";
+    response["version"] = HNSWLIB_VERSION;
     response["tagline"] = "HNSWLib Server: https://github.com/OwenElliottDev/hnswlib_server";
     return crow::response(response.dump());
   });
@@ -1000,17 +894,7 @@ int main() {
         }
 
         auto metadata = ctx->dataStore->get(id);
-        std::string vectorType = get_vector_type(ctx);
-        std::vector<float> vectorData;
-        if (vectorType == "FLOAT16") {
-          auto rawData = ctx->index->getDataByLabel<uint16_t>(id);
-          vectorData = f16_to_floats(rawData);
-        } else if (vectorType == "BFLOAT16") {
-          auto rawData = ctx->index->getDataByLabel<uint16_t>(id);
-          vectorData = bf16_to_floats(rawData);
-        } else {
-          vectorData = ctx->index->getDataByLabel<float>(id);
-        }
+        std::vector<float> vectorData = getVectorFromIndex(ctx->index, get_vector_type(ctx), id);
         nlohmann::json response;
 
         response["id"] = id;
@@ -1036,62 +920,22 @@ int main() {
 
     ctx->index->setEf(searchReq.efSearch);
 
-    std::string vectorType = get_vector_type(ctx);
-    std::vector<uint16_t> queryConverted;
-    const void *queryData;
-    if (vectorType == "FLOAT16") {
-      queryConverted = floats_to_f16(searchReq.queryVector);
-      queryData = queryConverted.data();
-    } else if (vectorType == "BFLOAT16") {
-      queryConverted = floats_to_bf16(searchReq.queryVector);
-      queryData = queryConverted.data();
-    } else {
-      queryData = searchReq.queryVector.data();
-    }
+    std::vector<uint16_t> queryScratch;
+    const void *queryData =
+        to_storage_vector(get_vector_type(ctx), searchReq.queryVector.data(), searchReq.queryVector.size(), queryScratch);
 
-    std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
-
-    // dispatch a kNN search honoring the (optional) filter and MRL reranking.
-    // For MRL indexes with rerankSize > 0 we scan at mrlScanDim dims and rerank the
-    // best rerankSize candidates at full dimensionality; rerankSize == 0 returns the
-    // scan-dim ranking directly. The exact-knn optimization is skipped for MRL since
-    // its scan distance is truncated.
-    bool useMrlRerank = ctx->isMrl && searchReq.rerankSize > 0;
-    auto knnSearch = [&](hnswlib::BaseFilterFunctor *f) {
-      if (useMrlRerank) {
-        return ctx->index->searchKnnMrl(queryData, searchReq.k, static_cast<size_t>(searchReq.rerankSize), ctx->mrlFullDistFunc,
-                                        ctx->mrlFullDistFuncParam, f);
-      }
-      return ctx->index->searchKnn(queryData, searchReq.k, f);
-    };
-
+    MrlParams mrl{ctx->isMrl, ctx->mrlFullDistFunc, ctx->mrlFullDistFuncParam};
+    std::vector<int> ids;
+    std::vector<float> distances;
     if (searchReq.filter.size() > 0) {
       std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
       DynamicBitset filteredIds = ctx->dataStore->filter(filters);
-
-      FilterIdsInSet filter(filteredIds);
-
-      if (!ctx->isMrl && filteredIds.count() < ctx->index->cur_element_count * EXACT_KNN_FILTER_PCT_MATCH_THRESHOLD) {
-        result = ctx->index->searchExactKnn(queryData, searchReq.k, &filter);
-      } else {
-        result = knnSearch(&filter);
-      }
+      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, searchReq.k, searchReq.rerankSize, &filteredIds);
     } else {
-      result = knnSearch(nullptr);
+      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, searchReq.k, searchReq.rerankSize, nullptr);
     }
 
     nlohmann::json response;
-    std::vector<int> ids;
-    std::vector<float> distances;
-    while (!result.empty()) {
-      ids.push_back(result.top().second);
-      distances.push_back(result.top().first);
-      result.pop();
-    }
-
-    std::reverse(ids.begin(), ids.end());
-    std::reverse(distances.begin(), distances.end());
-
     response["hits"] = ids;
     response["distances"] = distances;
 

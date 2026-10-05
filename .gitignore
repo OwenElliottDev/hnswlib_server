@@ -5,3 +5,8 @@ datastore_test.bin
 __pycache__/
 *.pyc
 indices/
+build-wasm/
+wasm/dist/
+.cache/
+.pytest_cache/
+.ruff_cache/
