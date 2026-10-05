@@ -114,8 +114,6 @@ void EdgeIndex::addDocuments(const std::vector<int> &ids, const float *vectors, 
   reserve(n);
   for (size_t i = 0; i < n; i++) {
     addPointToIndex(index_.get(), vectorType_, ids[i], vectors + i * dimension_, dimension_);
-    // remove first so an upsert drops the previous record's field index entries
-    dataStore_.remove(ids[i]);
     dataStore_.set(ids[i], metadatas.empty() ? Metadata{} : metadatas[i]);
   }
 }

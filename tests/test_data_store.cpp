@@ -377,3 +377,89 @@ TEST_F(DataStoreTest, MatchesFilterContainsArrayElement) {
     EXPECT_TRUE(dataStore.matchesFilter(120, ast));
     EXPECT_FALSE(dataStore.matchesFilter(121, ast));
 }
+
+class MixedTypeFieldTest : public DataStoreTest {
+protected:
+    void SetUp() override {
+        dataStore.set(1, {{"price", 2L}});
+        dataStore.set(2, {{"price", 100L}});
+        dataStore.set(3, {{"price", 1.5}});
+        dataStore.set(4, {{"price", 2.5}});
+        dataStore.set(5, {{"price", std::string("cheap")}});
+        dataStore.set(6, {{"price", -7L}});
+        dataStore.set(7, {{"price", -0.5}});
+    }
+
+    std::vector<int> filterIds(const std::string &filter) {
+        return dataStore.filter(parseFilters(filter)).to_vector();
+    }
+};
+
+TEST_F(MixedTypeFieldTest, LongRangeIgnoresOtherTypes) {
+    EXPECT_EQ(filterIds("price > 5"), (std::vector<int>{2}));
+    EXPECT_EQ(filterIds("price >= 2"), (std::vector<int>{1, 2}));
+    EXPECT_EQ(filterIds("price < 3"), (std::vector<int>{1, 6}));
+    EXPECT_EQ(filterIds("price <= 100"), (std::vector<int>{1, 2, 6}));
+}
+
+TEST_F(MixedTypeFieldTest, DoubleRangeIgnoresOtherTypes) {
+    EXPECT_EQ(filterIds("price > 5.0"), (std::vector<int>{}));
+    EXPECT_EQ(filterIds("price >= 1.5"), (std::vector<int>{3, 4}));
+    EXPECT_EQ(filterIds("price < 2.0"), (std::vector<int>{3, 7}));
+    EXPECT_EQ(filterIds("price <= 2.5"), (std::vector<int>{3, 4, 7}));
+}
+
+TEST_F(MixedTypeFieldTest, StringRangeIgnoresNumbers) {
+    EXPECT_EQ(filterIds(R"(price > "a")"), (std::vector<int>{5}));
+    EXPECT_EQ(filterIds(R"(price < "z")"), (std::vector<int>{5}));
+}
+
+TEST_F(MixedTypeFieldTest, NegativeLiterals) {
+    EXPECT_EQ(filterIds("price < 0"), (std::vector<int>{6}));
+    EXPECT_EQ(filterIds("price > -10"), (std::vector<int>{1, 2, 6}));
+    EXPECT_EQ(filterIds("price < 0.0"), (std::vector<int>{7}));
+    EXPECT_EQ(filterIds("price IN [-7, 100]"), (std::vector<int>{2, 6}));
+}
+
+TEST_F(MixedTypeFieldTest, MatchesFilterAgreesWithFilter) {
+    for (const std::string filter : {"price > 5", "price >= 2", "price < 3", "price <= 100", "price > 5.0", "price < 2.0",
+                                     R"(price > "a")", "price < 0", "price != 2", "price = 2.5"}) {
+        auto ast = parseFilters(filter);
+        std::vector<int> viaMatches;
+        for (int id = 1; id <= 7; id++) {
+            if (dataStore.matchesFilter(id, ast)) {
+                viaMatches.push_back(id);
+            }
+        }
+        EXPECT_EQ(viaMatches, filterIds(filter)) << filter;
+    }
+}
+
+TEST_F(DataStoreTest, BooleanPrecedenceInFilter) {
+    dataStore.set(1, {{"city", std::string("chicago")}, {"age", 20L}});
+    dataStore.set(2, {{"city", std::string("boston")}, {"age", 30L}});
+    dataStore.set(3, {{"city", std::string("boston")}, {"age", 20L}});
+
+    auto result = dataStore.filter(parseFilters(R"(city = "chicago" OR city = "boston" AND age > 25)"));
+    EXPECT_EQ(result.to_vector(), (std::vector<int>{1, 2}));
+
+    auto grouped = dataStore.filter(parseFilters(R"(NOT (city = "chicago" OR age > 25))"));
+    EXPECT_EQ(grouped.to_vector(), (std::vector<int>{3}));
+}
+
+TEST_F(DataStoreTest, UpsertReplacesFieldIndexEntries) {
+    dataStore.set(1, {{"category", std::string("shoes")}, {"tags", std::vector<std::string>{"a", "b"}}});
+    dataStore.set(1, {{"category", std::string("hats")}, {"tags", std::vector<std::string>{"c"}}});
+
+    EXPECT_TRUE(dataStore.filter(parseFilters(R"(category = "shoes")")).to_vector().empty());
+    EXPECT_TRUE(dataStore.filter(parseFilters(R"(tags CONTAINS "a")")).to_vector().empty());
+    EXPECT_EQ(dataStore.filter(parseFilters(R"(category = "hats")")).to_vector(), (std::vector<int>{1}));
+    EXPECT_EQ(dataStore.filter(parseFilters(R"(tags CONTAINS "c")")).to_vector(), (std::vector<int>{1}));
+}
+
+TEST_F(DataStoreTest, MatchesFilterUnknownIdDoesNotInsert) {
+    dataStore.set(1, {{"a", 1L}});
+    EXPECT_FALSE(dataStore.matchesFilter(99, parseFilters("a = 1")));
+    EXPECT_FALSE(dataStore.contains(99));
+}
+

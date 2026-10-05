@@ -5,11 +5,20 @@
 #include <fstream>
 #include <limits>
 #include <set>
+#include <type_traits>
 #include <typeindex>
 
 bool VariantComparator::operator()(const FieldValue &lhs, const FieldValue &rhs) const { return lhs < rhs; }
 
 namespace {
+template <typename T> FieldValue lowestOfType() {
+  if constexpr (std::is_same_v<T, std::string>) {
+    return std::string();
+  } else {
+    return std::numeric_limits<T>::lowest();
+  }
+}
+
 template <typename Func> void forEachIndexEntry(const FieldValue &value, Func func) {
   if (std::holds_alternative<std::vector<long>>(value)) {
     for (const auto &v : std::get<std::vector<long>>(value))
@@ -48,26 +57,24 @@ void DataStore::filterByType(DynamicBitset &result, const std::string &field, co
       }
     }
   } else if (type == ">") {
-    auto it = fieldData.upper_bound(value);
-    for (; it != fieldData.end(); ++it) {
+    for (auto it = fieldData.upper_bound(value); it != fieldData.end() && it->first.index() == value.index(); ++it) {
       for (int id : it->second)
         result.set(id);
     }
   } else if (type == "<") {
     auto lower_bound = fieldData.lower_bound(value);
-    for (auto it = fieldData.begin(); it != lower_bound; ++it) {
+    for (auto it = fieldData.lower_bound(lowestOfType<T>()); it != lower_bound; ++it) {
       for (int id : it->second)
         result.set(id);
     }
   } else if (type == ">=") {
-    auto lower_bound = fieldData.lower_bound(value);
-    for (auto it = lower_bound; it != fieldData.end(); ++it) {
+    for (auto it = fieldData.lower_bound(value); it != fieldData.end() && it->first.index() == value.index(); ++it) {
       for (int id : it->second)
         result.set(id);
     }
   } else if (type == "<=") {
     auto upper_bound = fieldData.upper_bound(value);
-    for (auto it = fieldData.begin(); it != upper_bound; ++it) {
+    for (auto it = fieldData.lower_bound(lowestOfType<T>()); it != upper_bound; ++it) {
       for (int id : it->second)
         result.set(id);
     }
@@ -118,7 +125,11 @@ bool DataStore::matchesFilter(int id, std::shared_ptr<FilterASTNode> filters) {
     return true;
   }
 
-  auto record = data[id];
+  auto recordIt = data.find(id);
+  if (recordIt == data.end()) {
+    return false;
+  }
+  const auto &record = recordIt->second;
   switch (filters->type) {
   case NodeType::Comparison: {
     auto filter = filters->filter;
@@ -126,11 +137,12 @@ bool DataStore::matchesFilter(int id, std::shared_ptr<FilterASTNode> filters) {
     auto value = filter.value;
     auto type = filter.type;
 
-    if (record.find(field) == record.end()) {
+    auto fieldIt = record.find(field);
+    if (fieldIt == record.end()) {
       return false;
     }
 
-    auto recordValue = record[field];
+    const auto &recordValue = fieldIt->second;
 
     if (type == "IN") {
       // Check if scalar document field is in array of filter values
@@ -179,6 +191,8 @@ bool DataStore::matchesFilter(int id, std::shared_ptr<FilterASTNode> filters) {
       return recordValue == value;
     if (type == "!=")
       return recordValue != value;
+    if (recordValue.index() != value.index())
+      return false;
     if (type == ">")
       return recordValue > value;
     if (type == "<")

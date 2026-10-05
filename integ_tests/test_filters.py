@@ -152,6 +152,98 @@ class TestFilterOperators:
         results = self._search("age > 100")
         assert len(results["hits"]) == 0
 
+    def test_filter_and_binds_tighter_than_or(self):
+        results = self._search('city = "chicago" OR city = "boston" AND age > 26')
+        assert set(results["hits"]) == {1, 3, 5}
+
+    def test_filter_not_applies_to_group(self):
+        results = self._search('NOT (city = "chicago" OR city = "boston")')
+        assert set(results["hits"]) == {0, 4}
+
+    def test_filter_negative_literals(self):
+        assert set(self._search("age > -1")["hits"]) == {0, 1, 2, 3, 4, 5}
+        assert set(self._search("score > -0.5")["hits"]) == {0, 1, 2, 3, 4, 5}
+
+    def test_filter_range_ignores_other_numeric_type(self):
+        assert self._search("age < 100.0")["hits"] == []
+        assert self._search("score > 5")["hits"] == []
+
+    def test_malformed_filters_are_rejected(self):
+        malformed = [
+            "age =",
+            "age",
+            "(age = 25",
+            "age = 25)",
+            "NOT",
+            "age = 25 AND",
+            "()",
+            "(" * 100000 + "age = 25" + ")" * 100000,
+            "NOT " * 100000 + "age = 25",
+        ]
+        for filter_str in malformed:
+            res = requests.post(
+                f"{BASE_URL}/search",
+                json={
+                    "indexName": FILTER_INDEX,
+                    "queryVector": [1, 0, 0, 0],
+                    "k": 6,
+                    "filter": filter_str,
+                },
+            )
+            assert res.status_code >= 400, filter_str[:40]
+        assert requests.get(f"{BASE_URL}/health").status_code == 200
+        assert set(self._search("age = 25")["hits"]) == {0, 2}
+
+
+NEGATIVE_INDEX = "filter_negative_test"
+NEGATIVE_DOCS = [
+    {"id": 0, "vector": [3, 0, 0, 0], "meta": {"temp": -5, "delta": -2.5}},
+    {"id": 1, "vector": [2, 0, 0, 0], "meta": {"temp": -1, "delta": 0.5}},
+    {"id": 2, "vector": [1, 0, 0, 0], "meta": {"temp": 3, "delta": -0.25}},
+]
+
+
+class TestNegativeValues:
+    @classmethod
+    def setup_class(cls):
+        create_index(NEGATIVE_INDEX)
+        res = requests.post(
+            f"{BASE_URL}/add_documents",
+            json={
+                "indexName": NEGATIVE_INDEX,
+                "ids": [d["id"] for d in NEGATIVE_DOCS],
+                "vectors": [d["vector"] for d in NEGATIVE_DOCS],
+                "metadatas": [d["meta"] for d in NEGATIVE_DOCS],
+            },
+        )
+        assert res.status_code == 201
+
+    def _search(self, filter_str):
+        res = requests.post(
+            f"{BASE_URL}/search",
+            json={
+                "indexName": NEGATIVE_INDEX,
+                "queryVector": [1, 0, 0, 0],
+                "k": 3,
+                "filter": filter_str,
+            },
+        )
+        assert res.status_code == 200, f"Search failed: {res.text}"
+        return set(res.json()["hits"])
+
+    def test_negative_long_comparisons(self):
+        assert self._search("temp < 0") == {0, 1}
+        assert self._search("temp > -2") == {1, 2}
+        assert self._search("temp = -5") == {0}
+
+    def test_negative_double_comparisons(self):
+        assert self._search("delta <= -0.25") == {0, 2}
+        assert self._search("delta > -1.0") == {1, 2}
+
+    def test_negative_in(self):
+        assert self._search("temp IN [-5, 3]") == {0, 2}
+        assert self._search("delta IN [-2.5, 0.5]") == {0, 1}
+
 
 SPACES_INDEX = "filter_spaces_test"
 SPACES_DOCS = [
