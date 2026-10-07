@@ -8,24 +8,19 @@ It supports the same spaces (`IP`, `L2`, `GEODEGREES`), vector types (`FLOAT32`,
 
 ## Quick Start
 
+This loads `products.bin`, `products.json` and `products.data` from the given URL and searches it:
+
 ```js
 import { VectorIndex } from './hnswlib-edge.mjs';
 
-// fetches products.bin, products.json and products.data
 const index = await VectorIndex.fromUrl('https://cdn.example.com/indices', 'products');
-
-const { hits, distances, metadatas } = index.search(queryVector, {
-  k: 10,
-  efSearch: 128,
-  filter: 'category = "shoes" AND price < 100.0',
-  returnMetadata: true,
-});
+const { hits, distances } = index.search(queryVector, { k: 10, filter: 'category = "shoes"' });
 ```
 
 Pinned releases can be imported straight from a CDN:
 
 ```js
-import { VectorIndex, version } from 'https://cdn.jsdelivr.net/gh/OwenPendrighElliott/hnswlib_server@wasm-v0.3.0/hnswlib-edge.mjs';
+import { VectorIndex } from 'https://cdn.jsdelivr.net/gh/OwenPendrighElliott/hnswlib_server@wasm-v0.3.0/hnswlib-edge.mjs';
 ```
 
 ## Building
@@ -78,7 +73,7 @@ Same shape as `/add_documents`. Vectors can be an array of arrays or one flat `F
 index.addDocuments({
   ids: [1, 2],
   vectors: [vec1, vec2],
-  metadatas: [{ category: 'shoes', price: 59.5 }, { category: 'hats', price: 20.0 }],
+  metadatas: [{ category: 'shoes' }, { category: 'hats' }],
 });
 
 index.deleteDocuments([2]);
@@ -103,11 +98,10 @@ const { hits } = index.similar(42, { k: 10, filter: 'category = "shoes"' });
 
 ### Fetching documents and status
 
+`getDocument` returns `{ id, vector, metadata }`, or `null` if the ID isn't in the index. `status` returns `currentElements`, `maxElements` and `deletedElements`, and `settings` holds the contents of `<name>.json`.
+
 ```js
-index.getDocument(1);  // { id, vector, metadata }, or null if the ID isn't in the index
-index.contains(1);     // true
-index.status();        // { currentElements, maxElements, deletedElements }
-index.settings;        // contents of <name>.json
+const doc = index.getDocument(1);
 ```
 
 ### Saving and loading
@@ -123,8 +117,11 @@ In Node or Deno you can read the server's files yourself:
 
 ```js
 import { readFile } from 'node:fs/promises';
-const [bin, settings, data] = await Promise.all(['bin', 'json', 'data'].map((e) => readFile(`indices/products.${e}`)));
-const index = await VectorIndex.load({ bin, settings: settings.toString(), data });
+
+const bin = await readFile('indices/products.bin');
+const settings = await readFile('indices/products.json', 'utf8');
+const data = await readFile('indices/products.data');
+const index = await VectorIndex.load({ bin, settings, data });
 ```
 
 Call `dispose` when you're done with an index to free its wasm memory. It also works with `using index = ...`.

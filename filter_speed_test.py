@@ -69,7 +69,9 @@ def run_speed_tests():
     ]
     for f in filters:
         n_runs = 100
-        time_taken = timeit.timeit(lambda: search_index_with_filter(f), number=n_runs)
+        time_taken = timeit.timeit(
+            lambda f=f: search_index_with_filter(f), number=n_runs
+        )
         avg_ms = (time_taken / n_runs) * 1000
         print(
             f"Filter '{f}': {avg_ms:.2f}ms per search on average | QPS: {1 / (time_taken / n_runs):.2f}"

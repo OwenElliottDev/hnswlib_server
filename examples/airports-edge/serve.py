@@ -13,6 +13,7 @@ import argparse
 import functools
 import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -21,7 +22,7 @@ DIST = os.path.join(ROOT, "wasm", "dist")
 
 class Handler(SimpleHTTPRequestHandler):
     # module scripts and streaming wasm compilation need exact MIME types
-    extensions_map = {
+    extensions_map: ClassVar[dict[str, str]] = {
         **SimpleHTTPRequestHandler.extensions_map,
         ".mjs": "text/javascript",
         ".wasm": "application/wasm",
