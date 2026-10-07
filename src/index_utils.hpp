@@ -6,6 +6,7 @@
 
 #include "dynamic_bitset.hpp"
 #include "hnswlib/hnswlib.h"
+#include <algorithm>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -189,6 +190,26 @@ inline std::pair<std::vector<int>, std::vector<float>> knn_search(hnswlib::Hiera
     result.pop();
   }
   return {std::move(ids), std::move(distances)};
+}
+
+// Applies pagination to knn_search results in place: removes `excludeId` (when
+// non-negative), skips the first `offset` hits, then keeps at most `k`. Callers
+// should search for k + offset (+ 1 when excluding) so a full page survives.
+inline void paginate_results(std::vector<int> &ids, std::vector<float> &distances, size_t offset, size_t k, int excludeId = -1) {
+  if (excludeId >= 0) {
+    auto it = std::find(ids.begin(), ids.end(), excludeId);
+    if (it != ids.end()) {
+      distances.erase(distances.begin() + (it - ids.begin()));
+      ids.erase(it);
+    }
+  }
+  size_t skip = std::min(offset, ids.size());
+  ids.erase(ids.begin(), ids.begin() + skip);
+  distances.erase(distances.begin(), distances.begin() + skip);
+  if (ids.size() > k) {
+    ids.resize(k);
+    distances.resize(k);
+  }
 }
 
 #endif // INDEX_UTILS_HPP

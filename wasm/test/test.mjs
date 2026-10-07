@@ -281,6 +281,81 @@ test('empty index searches return no hits', async () => {
   loaded.dispose();
 });
 
+// points on a line under L2, so neighbour order is fully determined
+async function lineIndex(n = 50) {
+  const index = await VectorIndex.create({ dimension: 4, spaceType: 'L2' });
+  const lineIds = Array.from({ length: n }, (_, i) => i);
+  index.addDocuments({
+    ids: lineIds,
+    vectors: lineIds.map((i) => [i, 0, 0, 0]),
+    metadatas: lineIds.map((i) => ({ position: i, parity: i % 2 === 0 ? 'even' : 'odd' })),
+  });
+  return index;
+}
+
+const range = (from, to) => Array.from({ length: to - from }, (_, i) => from + i);
+const ORIGIN = [0, 0, 0, 0];
+
+test('search offset pages through results', async () => {
+  const index = await lineIndex();
+  assert.deepEqual(index.search(ORIGIN, { k: 10, offset: 0 }), index.search(ORIGIN, { k: 10 }));
+
+  const full = index.search(ORIGIN, { k: 30 });
+  const pages = [0, 10, 20].map((offset) => index.search(ORIGIN, { k: 10, offset }));
+  assert.deepEqual(pages.flatMap((p) => p.hits), full.hits);
+  assert.deepEqual(pages.flatMap((p) => p.distances), full.distances);
+  assert.deepEqual(full.hits, range(0, 30));
+
+  assert.deepEqual(index.search(ORIGIN, { k: 10, offset: 45 }).hits, range(45, 50), 'partial last page');
+  assert.deepEqual(index.search(ORIGIN, { k: 10, offset: 50 }), { hits: [], distances: [] }, 'past the end');
+  assert.deepEqual(index.search(ORIGIN, { k: 5, offset: 40, efSearch: 10 }).hits, range(40, 45), 'efSearch raised to cover offset');
+  index.dispose();
+});
+
+test('search offset with filters and metadata', async () => {
+  const index = await lineIndex();
+  assert.deepEqual(index.search(ORIGIN, { k: 5, offset: 5, filter: 'parity = "odd"' }).hits, [11, 13, 15, 17, 19]);
+  assert.deepEqual(index.search(ORIGIN, { k: 10, offset: 20, filter: 'parity = "odd"' }).hits, [41, 43, 45, 47, 49]);
+  const page = index.search(ORIGIN, { k: 4, offset: 8, returnMetadata: true });
+  assert.deepEqual(page.metadatas.map((m) => m.position), page.hits);
+  assert.throws(() => index.search(ORIGIN, { k: 5, offset: -1 }), /offset must be non-negative/);
+  index.dispose();
+});
+
+test('similar uses the stored vector and excludes the input document', async () => {
+  const index = await lineIndex();
+  assert.deepEqual(index.similar(0, { k: 5 }).hits, [1, 2, 3, 4, 5]);
+  const withSelf = index.similar(0, { k: 5, excludeInputDocument: false });
+  assert.deepEqual(withSelf.hits, [0, 1, 2, 3, 4]);
+  assert.equal(withSelf.distances[0], 0);
+
+  const full = index.similar(0, { k: 30 });
+  const pages = [0, 10, 20].map((offset) => index.similar(0, { k: 10, offset }));
+  assert.deepEqual(pages.flatMap((p) => p.hits), full.hits);
+  assert.deepEqual(full.hits, range(1, 31));
+  assert.deepEqual(index.similar(0, { k: 10, offset: 45 }).hits, [46, 47, 48, 49], 'partial last page');
+  assert.deepEqual(index.similar(0, { k: 10, offset: 50 }).hits, []);
+
+  const filtered = index.similar(20, { k: 4, offset: 2, filter: 'parity = "even"', returnMetadata: true });
+  assert.deepEqual(new Set(filtered.hits), new Set([14, 16, 24, 26]));
+  assert.deepEqual(filtered.metadatas.map((m) => m.position), filtered.hits);
+
+  assert.throws(() => index.similar(1000, { k: 5 }), /not found/);
+  assert.throws(() => index.similar(0, { k: 5, offset: -1 }), /offset must be non-negative/);
+  index.dispose();
+});
+
+test('similar matches search with the document vector for reduced-precision indexes', async () => {
+  for (const vectorType of ['FLOAT16', 'BFLOAT16']) {
+    const index = await VectorIndex.create({ dimension: DIM, spaceType: 'L2', vectorType });
+    index.addDocuments({ ids, vectors });
+    const opts = { k: 10, offset: 3, efSearch: 200, excludeInputDocument: false };
+    const stored = index.getDocument(42).vector;
+    assert.deepEqual(index.similar(42, opts), index.search(stored, opts), vectorType);
+    index.dispose();
+  }
+});
+
 test('JS wrapper and wasm module carry the VERSION file version', async () => {
   const expected = readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim();
   assert.equal(version, expected);

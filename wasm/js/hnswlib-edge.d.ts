@@ -34,12 +34,19 @@ export interface AddDocumentsRequest {
 
 export interface SearchOptions {
   k?: number;
+  /** Skip this many nearest hits before returning k, for pagination. */
+  offset?: number;
   efSearch?: number;
   /** Filter DSL string, same syntax as the server. */
   filter?: string;
   returnMetadata?: boolean;
   /** MRL indexes only: rerank this many scan-dim candidates at full dimensionality. */
   rerankSize?: number;
+}
+
+export interface SimilarOptions extends SearchOptions {
+  /** Leave the input document out of the results. Defaults to true. */
+  excludeInputDocument?: boolean;
 }
 
 export interface SearchResult {
@@ -89,6 +96,7 @@ export class VectorIndex {
   addDocuments(request: AddDocumentsRequest): void;
   deleteDocuments(ids: ArrayLike<number>): void;
   search(queryVector: ArrayLike<number>, options?: SearchOptions): SearchResult;
+  similar(id: number, options?: SimilarOptions): SearchResult;
   contains(id: number): boolean;
   getDocument(id: number): Document | null;
   save(): SavedIndex;

@@ -7,6 +7,7 @@ __pycache__/
 indices/
 build-wasm/
 wasm/dist/
+wasm/emsdk/
 .cache/
 .pytest_cache/
 .ruff_cache/
