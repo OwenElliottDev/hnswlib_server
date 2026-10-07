@@ -1,5 +1,4 @@
 import requests
-
 from conftest import BASE_URL, force_remove_index
 
 # doc 1 matches the query on all 8 dims; doc 2 matches only on the first 4
@@ -93,3 +92,33 @@ def test_mrl_survives_save_load():
     assert body["hits"][0] == 1
     assert abs(body["distances"][0]) < 1e-3
     force_remove_index(name)
+
+
+def test_mrl_get_document_returns_full_vector():
+    name = _create_mrl("mrl_test_get")
+    _add_docs(name)
+
+    res = requests.get(f"{BASE_URL}/get_document/{name}/2")
+    assert res.status_code == 200
+    assert res.json()["vector"] == [1, 1, 1, 1, 9, 9, 9, 9]
+
+
+def test_mrl_similar_reranks_with_full_stored_vector():
+    name = _create_mrl("mrl_test_similar")
+    _add_docs(name)
+
+    # doc 2 is identical to doc 1 on the scan prefix but doc 3 is closer at
+    # full dimension, so reranking only finds doc 3 if the full vector is used
+    res = requests.post(
+        f"{BASE_URL}/similar",
+        json={"indexName": name, "docId": 1, "k": 1, "rerankSize": 3},
+    )
+    assert res.status_code == 200
+    assert res.json()["hits"] == [3]
+
+    res = requests.post(
+        f"{BASE_URL}/similar",
+        json={"indexName": name, "docId": 1, "k": 1},
+    )
+    assert res.status_code == 200
+    assert res.json()["hits"] == [2]

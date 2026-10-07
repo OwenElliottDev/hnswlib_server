@@ -70,6 +70,12 @@ async function fetchBytes(fetchFn, url, requestInit, optional) {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+function toSearchResult(r, returnMetadata) {
+  const result = { hits: Array.from(r.hits), distances: Array.from(r.distances) };
+  if (returnMetadata) result.metadatas = JSON.parse(r.metadatas);
+  return result;
+}
+
 export class VectorIndex {
   #module;
   #handle;
@@ -166,13 +172,24 @@ export class VectorIndex {
   /**
    * Same options as the server's /search body. Returns
    * { hits: number[], distances: number[], metadatas?: object[] }, nearest first.
+   * `offset` skips that many nearest hits, for pagination.
    */
-  search(queryVector, { k = 10, efSearch = 512, filter = '', returnMetadata = false, rerankSize = 0 } = {}) {
+  search(queryVector, { k = 10, offset = 0, efSearch = 512, filter = '', returnMetadata = false, rerankSize = 0 } = {}) {
     const query = queryVector instanceof Float32Array ? queryVector : Float32Array.from(queryVector);
-    const r = this.#live().search(query, k, efSearch, filter, returnMetadata, rerankSize);
-    const result = { hits: Array.from(r.hits), distances: Array.from(r.distances) };
-    if (returnMetadata) result.metadatas = JSON.parse(r.metadatas);
-    return result;
+    return toSearchResult(this.#live().search(query, k, offset, efSearch, filter, returnMetadata, rerankSize), returnMetadata);
+  }
+
+  /**
+   * Finds documents similar to document `id`, using its stored vector as the
+   * query. Same options and result as the server's /similar body; the document
+   * itself is left out unless `excludeInputDocument` is false. Throws if `id` is unknown.
+   */
+  similar(
+    id,
+    { k = 10, offset = 0, efSearch = 512, filter = '', returnMetadata = false, rerankSize = 0, excludeInputDocument = true } = {},
+  ) {
+    const r = this.#live().similar(id, k, offset, efSearch, filter, returnMetadata, rerankSize, excludeInputDocument);
+    return toSearchResult(r, returnMetadata);
   }
 
   contains(id) {

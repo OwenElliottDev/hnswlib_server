@@ -1,8 +1,8 @@
+import os
 import time
 
 import pytest
 import requests
-import os
 
 BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8685")
 

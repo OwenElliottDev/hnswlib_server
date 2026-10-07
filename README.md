@@ -195,7 +195,7 @@ make
 Format in place:
 
 ```bash
-uv run clang-format -i src/*.cpp src/*.hpp
+uv run clang-format -i src/*.cpp src/*.hpp wasm/src/*.cpp wasm/src/*.hpp
 ```
 
 ## Running

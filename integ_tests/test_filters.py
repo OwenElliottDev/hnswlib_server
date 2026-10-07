@@ -1,5 +1,4 @@
 import requests
-
 from conftest import BASE_URL, create_index
 
 FILTER_INDEX = "filter_ops_test"

@@ -1,13 +1,14 @@
 import argparse
-import pycurl
 import json
-import time
-import numpy as np
-from tqdm import tqdm
-from io import BytesIO
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from queue import Queue
+
+import numpy as np
+import pycurl
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument(

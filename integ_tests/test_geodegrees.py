@@ -1,5 +1,4 @@
 import requests
-
 from conftest import BASE_URL, create_index, force_remove_index
 
 # (latitude, longitude) in degrees
