@@ -110,6 +110,35 @@ template <typename T> val toTypedArray(const char *ctor, const std::vector<T> &v
   return val::global(ctor).new_(typed_memory_view(v.size(), v.data()));
 }
 
+SearchOptions makeSearchOptions(int k, int offset, int efSearch, const std::string &filter, bool returnMetadata, int rerankSize) {
+  if (offset < 0) {
+    throw std::invalid_argument("offset must be non-negative");
+  }
+  SearchOptions opts;
+  opts.k = static_cast<size_t>(std::max(k, 0));
+  opts.offset = static_cast<size_t>(offset);
+  opts.efSearch = efSearch;
+  opts.filter = filter;
+  opts.returnMetadata = returnMetadata;
+  opts.rerankSize = rerankSize;
+  return opts;
+}
+
+// { hits: Int32Array, distances: Float32Array, metadatas?: string (JSON array) }
+val searchResultToVal(const SearchResult &r, bool returnMetadata) {
+  val out = val::object();
+  out.set("hits", toTypedArray("Int32Array", r.hits));
+  out.set("distances", toTypedArray("Float32Array", r.distances));
+  if (returnMetadata) {
+    nlohmann::json metas = nlohmann::json::array();
+    for (const auto &m : r.metadatas) {
+      metas.push_back(metadataToJson(m));
+    }
+    out.set("metadatas", metas.dump());
+  }
+  return out;
+}
+
 std::set<std::string> doubleFieldsFrom(const nlohmann::json &settings) {
   std::set<std::string> fields;
   if (settings.contains("doubleFields") && settings["doubleFields"].is_array()) {
@@ -165,28 +194,20 @@ public:
   }
 
   // Returns { hits: Int32Array, distances: Float32Array, metadatas?: string (JSON array) }.
-  val search(const val &query, int k, int efSearch, const std::string &filter, bool returnMetadata, int rerankSize) {
+  val search(const val &query, int k, int offset, int efSearch, const std::string &filter, bool returnMetadata, int rerankSize) {
     return guarded([&] {
       auto q = convertJSArrayToNumberVector<float>(query);
-      SearchOptions opts;
-      opts.k = static_cast<size_t>(std::max(k, 0));
-      opts.efSearch = efSearch;
-      opts.filter = filter;
-      opts.returnMetadata = returnMetadata;
-      opts.rerankSize = rerankSize;
-      SearchResult r = index_->search(q.data(), q.size(), opts);
+      auto opts = makeSearchOptions(k, offset, efSearch, filter, returnMetadata, rerankSize);
+      return searchResultToVal(index_->search(q.data(), q.size(), opts), returnMetadata);
+    });
+  }
 
-      val out = val::object();
-      out.set("hits", toTypedArray("Int32Array", r.hits));
-      out.set("distances", toTypedArray("Float32Array", r.distances));
-      if (returnMetadata) {
-        nlohmann::json metas = nlohmann::json::array();
-        for (const auto &m : r.metadatas) {
-          metas.push_back(metadataToJson(m));
-        }
-        out.set("metadatas", metas.dump());
-      }
-      return out;
+  // Same as search, with document `id`'s stored vector as the query.
+  val similar(int id, int k, int offset, int efSearch, const std::string &filter, bool returnMetadata, int rerankSize,
+              bool excludeInputDocument) {
+    return guarded([&] {
+      auto opts = makeSearchOptions(k, offset, efSearch, filter, returnMetadata, rerankSize);
+      return searchResultToVal(index_->similar(id, opts, excludeInputDocument), returnMetadata);
     });
   }
 
@@ -225,6 +246,7 @@ EMSCRIPTEN_BINDINGS(hnswlib_edge) {
       .function("addDocuments", &Index::addDocuments)
       .function("deleteDocuments", &Index::deleteDocuments)
       .function("search", &Index::search)
+      .function("similar", &Index::similar)
       .function("contains", &Index::contains)
       .function("getDocument", &Index::getDocument)
       .function("settings", &Index::settings)

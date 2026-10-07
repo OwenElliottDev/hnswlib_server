@@ -17,7 +17,6 @@ import argparse
 import os
 
 import requests
-
 from glove_common import INDEX_NAME, load_vectors
 
 SERVER = os.getenv("HNSW_SERVER", "http://localhost:8685")

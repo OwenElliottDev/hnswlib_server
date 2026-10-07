@@ -90,6 +90,26 @@ async function compareSearches(name, index, queries, extra = {}) {
   }
 }
 
+// pagination and /similar must agree with the server page for page
+async function comparePagination(name, index, queries, extra = {}) {
+  for (const [qi, q] of queries.slice(0, 3).entries()) {
+    for (const offset of [0, 7, 25]) {
+      const opts = { k: 10, offset, efSearch: 200, returnMetadata: true, ...extra };
+      const server = await call('POST', '/search', { indexName: name, queryVector: q, ...opts });
+      assertSimilar(server, index.search(q, opts), `${name} offset=${offset} q=${qi}`);
+    }
+  }
+  for (const docId of [0, 500, 2999]) {
+    for (const offset of [0, 10]) {
+      const opts = { k: 10, offset, efSearch: 200, filter: 'year >= 2000', returnMetadata: true, ...extra };
+      const server = await call('POST', '/similar', { indexName: name, docId, ...opts });
+      const wasm = index.similar(docId, opts);
+      assert.ok(!wasm.hits.includes(docId) && !server.hits.includes(docId), `${name} similar ${docId}: input excluded`);
+      assertSimilar(server, wasm, `${name} similar docId=${docId} offset=${offset}`);
+    }
+  }
+}
+
 const CONFIGS = [
   { spaceType: 'L2', vectorType: 'FLOAT32' },
   { spaceType: 'IP', vectorType: 'FLOAT16' },
@@ -123,6 +143,7 @@ for (const [ci, config] of CONFIGS.entries()) {
   assert.equal(index.getDocument(2), null, 'server-side delete survives');
   assert.deepEqual(index.getDocument(10).metadata, metadataFor(10));
   await compareSearches(name, index, queries, searchExtra);
+  await comparePagination(name, index, queries, searchExtra);
   console.log(`ok - ${name}: server -> wasm (${JSON.stringify(settings)})`);
 
   // 3. WASM mutates and saves; server loads the result

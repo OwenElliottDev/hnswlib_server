@@ -68,6 +68,7 @@ class DockerServer:
                 ["docker", "image", "inspect", IMAGE],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             ).returncode
             != 0
         ):
@@ -82,6 +83,7 @@ class DockerServer:
             ["docker", "rm", "-f", CONTAINER],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         subprocess.run(
             [
@@ -108,6 +110,7 @@ class DockerServer:
             ["docker", "kill", CONTAINER],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
 
     def cleanup(self):
@@ -115,6 +118,7 @@ class DockerServer:
             ["docker", "rm", "-f", CONTAINER],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
 
 
@@ -133,10 +137,10 @@ class BinaryServer:
 
     def start(self):
         env = dict(os.environ, WAL_FSYNC_INTERVAL_MS="250")
-        log = open(self.logfile, "a")
-        self.proc = subprocess.Popen(
-            [self.binary], cwd=self.workdir, env=env, stdout=log, stderr=log
-        )
+        with open(self.logfile, "a") as log:
+            self.proc = subprocess.Popen(
+                [self.binary], cwd=self.workdir, env=env, stdout=log, stderr=log
+            )
         wait_healthy()
 
     def kill(self):

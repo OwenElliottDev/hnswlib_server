@@ -1,5 +1,6 @@
-import requests
+import itertools
 
+import requests
 from conftest import BASE_URL, create_index
 
 
@@ -39,7 +40,7 @@ def test_search_index_no_filter():
     )
 
     distances = results["distances"]
-    assert all(earlier < later for earlier, later in zip(distances, distances[1:])), (
+    assert all(earlier < later for earlier, later in itertools.pairwise(distances)), (
         f"Distances not in increasing order: {distances}"
     )
 

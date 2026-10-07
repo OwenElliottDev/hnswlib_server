@@ -916,6 +916,12 @@ int main() {
       return crow::response(404, "Index not found");
     }
 
+    if (searchReq.offset < 0) {
+      return crow::response(400, "offset must be non-negative");
+    }
+
+    searchReq.efSearch = std::max(searchReq.efSearch, searchReq.k + searchReq.offset);
+
     std::shared_lock<std::shared_mutex> lock(ctx->mutex);
 
     ctx->index->setEf(searchReq.efSearch);
@@ -925,21 +931,83 @@ int main() {
         to_storage_vector(get_vector_type(ctx), searchReq.queryVector.data(), searchReq.queryVector.size(), queryScratch);
 
     MrlParams mrl{ctx->isMrl, ctx->mrlFullDistFunc, ctx->mrlFullDistFuncParam};
+    size_t fetchK = static_cast<size_t>(searchReq.k) + searchReq.offset;
     std::vector<int> ids;
     std::vector<float> distances;
     if (searchReq.filter.size() > 0) {
       std::shared_ptr<FilterASTNode> filters = parseFilters(searchReq.filter);
       DynamicBitset filteredIds = ctx->dataStore->filter(filters);
-      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, searchReq.k, searchReq.rerankSize, &filteredIds);
+      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, fetchK, searchReq.rerankSize, &filteredIds);
     } else {
-      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, searchReq.k, searchReq.rerankSize, nullptr);
+      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, fetchK, searchReq.rerankSize, nullptr);
     }
+    paginate_results(ids, distances, searchReq.offset, searchReq.k);
 
     nlohmann::json response;
     response["hits"] = ids;
     response["distances"] = distances;
 
     if (searchReq.returnMetadata) {
+      auto metadatas = ctx->dataStore->getMany(ids);
+      response["metadatas"] = nlohmann::json::array();
+      for (const auto &metadata : metadatas) {
+        nlohmann::json json_metadata;
+        for (const auto &[key, value] : metadata) {
+          std::visit([&json_metadata, &key](auto &&arg) { json_metadata[key] = arg; }, value);
+        }
+        response["metadatas"].push_back(json_metadata);
+      }
+    }
+
+    return crow::response(response.dump());
+  });
+
+  CROW_ROUTE(app, "/similar").methods(crow::HTTPMethod::POST)([](const crow::request &req) {
+    auto data = nlohmann::json::parse(req.body);
+    SimilarRequest similarReq = data.get<SimilarRequest>();
+
+    auto ctx = getContext(similarReq.indexName);
+    if (!ctx) {
+      return crow::response(404, "Index not found");
+    }
+
+    if (similarReq.offset < 0) {
+      return crow::response(400, "offset must be non-negative");
+    }
+
+    similarReq.efSearch = std::max(similarReq.efSearch, similarReq.k + similarReq.offset);
+
+    std::shared_lock<std::shared_mutex> lock(ctx->mutex);
+
+    if (!ctx->dataStore->contains(similarReq.docId)) {
+      return crow::response(404, "Input document not found in the index");
+    }
+
+    ctx->index->setEf(similarReq.efSearch);
+
+    std::vector<float> queryVec = getVectorFromIndex(ctx->index, get_vector_type(ctx), similarReq.docId);
+    std::vector<uint16_t> queryScratch;
+    const void *queryData = to_storage_vector(get_vector_type(ctx), queryVec.data(), queryVec.size(), queryScratch);
+
+    MrlParams mrl{ctx->isMrl, ctx->mrlFullDistFunc, ctx->mrlFullDistFuncParam};
+    // one extra so a full page survives dropping the input document
+    size_t fetchK = static_cast<size_t>(similarReq.k) + similarReq.offset + (similarReq.excludeInputDocument ? 1 : 0);
+    std::vector<int> ids;
+    std::vector<float> distances;
+    if (similarReq.filter.size() > 0) {
+      std::shared_ptr<FilterASTNode> filters = parseFilters(similarReq.filter);
+      DynamicBitset filteredIds = ctx->dataStore->filter(filters);
+      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, fetchK, similarReq.rerankSize, &filteredIds);
+    } else {
+      std::tie(ids, distances) = knn_search(ctx->index, mrl, queryData, fetchK, similarReq.rerankSize, nullptr);
+    }
+    paginate_results(ids, distances, similarReq.offset, similarReq.k, similarReq.excludeInputDocument ? similarReq.docId : -1);
+
+    nlohmann::json response;
+    response["hits"] = ids;
+    response["distances"] = distances;
+
+    if (similarReq.returnMetadata) {
       auto metadatas = ctx->dataStore->getMany(ids);
       response["metadatas"] = nlohmann::json::array();
       for (const auto &metadata : metadatas) {

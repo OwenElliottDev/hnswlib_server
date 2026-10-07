@@ -23,7 +23,6 @@ import time
 import numpy as np
 import requests
 from flask import Flask, jsonify, request, send_from_directory
-
 from glove_common import INDEX_NAME, load_vectors
 
 SERVER = os.getenv("HNSW_SERVER", "http://localhost:8685")

@@ -148,6 +148,7 @@ struct SearchRequest {
   std::string indexName;
   std::vector<float> queryVector;
   int k;
+  int offset = 0;              // offset, used for pagination
   int efSearch = 512;          // default value
   std::string filter = "";     // filter string, default is empty (no filter)
   bool returnMetadata = false; // whether to return metadata or not, default is false
@@ -160,6 +161,33 @@ inline void from_json(const nlohmann::json &j, SearchRequest &req) {
   j.at("queryVector").get_to(req.queryVector);
   j.at("k").get_to(req.k);
   // defaults
+  req.offset = j.value("offset", req.offset);
+  req.efSearch = j.value("efSearch", req.efSearch);
+  req.filter = j.value("filter", req.filter);
+  req.returnMetadata = j.value("returnMetadata", req.returnMetadata);
+  req.rerankSize = j.value("rerankSize", req.rerankSize);
+}
+
+struct SimilarRequest {
+  std::string indexName;
+  int docId;
+  int k;
+  int offset = 0;                   // offset, used for pagination
+  bool excludeInputDocument = true; // determines if we should filter out the source document
+  int efSearch = 512;               // default value
+  std::string filter = "";          // filter string, default is empty (no filter)
+  bool returnMetadata = false;      // whether to return metadata or not, default is false
+  int rerankSize = 0;               // MRL only: rerank the best rerankSize scan-dim candidates at full
+                                    // dimensionality and return the top k. 0 means no reranking.
+};
+
+inline void from_json(const nlohmann::json &j, SimilarRequest &req) {
+  j.at("indexName").get_to(req.indexName);
+  j.at("docId").get_to(req.docId);
+  j.at("k").get_to(req.k);
+  // defaults
+  req.offset = j.value("offset", req.offset);
+  req.excludeInputDocument = j.value("excludeInputDocument", req.excludeInputDocument);
   req.efSearch = j.value("efSearch", req.efSearch);
   req.filter = j.value("filter", req.filter);
   req.returnMetadata = j.value("returnMetadata", req.returnMetadata);

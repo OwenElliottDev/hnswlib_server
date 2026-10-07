@@ -1,5 +1,4 @@
 import requests
-
 from conftest import BASE_URL, create_index
 
 ARRAY_INDEX = "array_filter_test"

@@ -133,23 +133,38 @@ SearchResult EdgeIndex::search(const float *query, size_t queryDim, const Search
   if (queryDim != static_cast<size_t>(dimension_)) {
     throw std::invalid_argument("Query vector has dimension " + std::to_string(queryDim) + ", expected " + std::to_string(dimension_));
   }
+  std::vector<uint16_t> scratch;
+  return searchStorage(to_storage_vector(vectorType_, query, queryDim, scratch), options, -1);
+}
+
+SearchResult EdgeIndex::similar(int id, const SearchOptions &options, bool excludeInput) {
+  if (!dataStore_.contains(id)) {
+    throw std::invalid_argument("Input document " + std::to_string(id) + " not found in the index");
+  }
+  std::vector<float> query = getVector(id);
+  std::vector<uint16_t> scratch;
+  return searchStorage(to_storage_vector(vectorType_, query.data(), query.size(), scratch), options, excludeInput ? id : -1);
+}
+
+SearchResult EdgeIndex::searchStorage(const void *queryData, const SearchOptions &options, int excludeId) {
   if (options.k == 0) {
     throw std::invalid_argument("k must be positive");
   }
 
-  index_->setEf(std::max<size_t>(options.efSearch, options.k));
+  // one extra so a full page survives dropping the excluded document
+  size_t fetchK = options.k + options.offset + (excludeId >= 0 ? 1 : 0);
+  index_->setEf(std::max<size_t>(options.efSearch, options.k + options.offset));
 
-  std::vector<uint16_t> scratch;
-  const void *queryData = to_storage_vector(vectorType_, query, queryDim, scratch);
   MrlParams mrl{space_.isMrl, space_.fullDistFunc, space_.fullDistFuncParam};
 
   SearchResult result;
   if (!options.filter.empty()) {
     DynamicBitset filteredIds = dataStore_.filter(parseFilters(options.filter));
-    std::tie(result.hits, result.distances) = knn_search(index_.get(), mrl, queryData, options.k, options.rerankSize, &filteredIds);
+    std::tie(result.hits, result.distances) = knn_search(index_.get(), mrl, queryData, fetchK, options.rerankSize, &filteredIds);
   } else {
-    std::tie(result.hits, result.distances) = knn_search(index_.get(), mrl, queryData, options.k, options.rerankSize, nullptr);
+    std::tie(result.hits, result.distances) = knn_search(index_.get(), mrl, queryData, fetchK, options.rerankSize, nullptr);
   }
+  paginate_results(result.hits, result.distances, options.offset, options.k, excludeId);
 
   if (options.returnMetadata) {
     result.metadatas = dataStore_.getMany(result.hits);
