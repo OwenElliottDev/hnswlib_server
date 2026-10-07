@@ -128,14 +128,28 @@ inline void addPointToIndex(hnswlib::HierarchicalNSW<float> *index, const std::s
   addPointToIndex(index, vectorType, id, vec.data(), vec.size());
 }
 
+// Copies a stored vector out by label. hnswlib's getDataByLabel sizes the copy
+// from the distance function's dimension, which for MRL indexes is mrlScanDim,
+// so this uses the full stored size instead.
+template <typename T> std::vector<T> getStoredVector(hnswlib::HierarchicalNSW<float> *index, int id) {
+  std::unique_lock<std::mutex> lockLabel(index->getLabelOpMutex(id));
+  std::unique_lock<std::mutex> lockTable(index->label_lookup_lock);
+  auto it = index->label_lookup_.find(id);
+  if (it == index->label_lookup_.end() || index->isMarkedDeleted(it->second)) {
+    throw std::runtime_error("Label not found");
+  }
+  const T *data = reinterpret_cast<const T *>(index->getDataByInternalId(it->second));
+  return std::vector<T>(data, data + index->data_size_ / sizeof(T));
+}
+
 // Reads a stored vector back out as float32 regardless of storage type.
 inline std::vector<float> getVectorFromIndex(hnswlib::HierarchicalNSW<float> *index, const std::string &vectorType, int id) {
   if (vectorType == "FLOAT16") {
-    return f16_to_floats(index->getDataByLabel<uint16_t>(id));
+    return f16_to_floats(getStoredVector<uint16_t>(index, id));
   } else if (vectorType == "BFLOAT16") {
-    return bf16_to_floats(index->getDataByLabel<uint16_t>(id));
+    return bf16_to_floats(getStoredVector<uint16_t>(index, id));
   }
-  return index->getDataByLabel<float>(id);
+  return getStoredVector<float>(index, id);
 }
 
 // functor to filter results with a bitset of IDs

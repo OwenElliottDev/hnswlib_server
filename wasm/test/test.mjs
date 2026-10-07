@@ -356,6 +356,22 @@ test('similar matches search with the document vector for reduced-precision inde
   }
 });
 
+test('MRL indexes return full vectors and similar reranks with them', async () => {
+  const index = await VectorIndex.create({ dimension: 8, spaceType: 'L2', mrlScanDim: 4 });
+  index.addDocuments({
+    ids: [1, 2, 3],
+    vectors: [
+      [1, 1, 1, 1, 1, 1, 1, 1],
+      [1, 1, 1, 1, 9, 9, 9, 9],
+      [5, 5, 5, 5, 5, 5, 5, 5],
+    ],
+  });
+  assert.deepEqual(Array.from(index.getDocument(2).vector), [1, 1, 1, 1, 9, 9, 9, 9]);
+  assert.deepEqual(index.similar(1, { k: 1, rerankSize: 3 }).hits, [3]);
+  assert.deepEqual(index.similar(1, { k: 1 }).hits, [2]);
+  index.dispose();
+});
+
 test('JS wrapper and wasm module carry the VERSION file version', async () => {
   const expected = readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim();
   assert.equal(version, expected);
