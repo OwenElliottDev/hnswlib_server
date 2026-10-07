@@ -1,6 +1,5 @@
 import pytest
 import requests
-
 from conftest import BASE_URL, create_index, delete_index
 
 INDEX_NAME = "pagination"

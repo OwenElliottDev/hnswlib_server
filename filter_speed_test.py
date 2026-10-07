@@ -1,6 +1,7 @@
-import requests
-import numpy as np
 import timeit
+
+import numpy as np
+import requests
 
 BASE_URL = "http://localhost:8685"
 DIMENSION = 2  # low because we care about filters here rather than HNSW traversal

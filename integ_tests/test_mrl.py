@@ -1,5 +1,4 @@
 import requests
-
 from conftest import BASE_URL, force_remove_index
 
 # doc 1 matches the query on all 8 dims; doc 2 matches only on the first 4

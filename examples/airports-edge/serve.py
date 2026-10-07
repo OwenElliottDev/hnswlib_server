@@ -46,13 +46,19 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=5003)
-    parser.add_argument("--indices", default=os.path.join(ROOT, "indices"), help="directory holding airports.bin/.json/.data")
+    parser.add_argument(
+        "--indices",
+        default=os.path.join(ROOT, "indices"),
+        help="directory holding airports.bin/.json/.data",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(os.path.join(DIST, "hnswlib_edge.wasm")):
         raise SystemExit(f"WASM build not found in {DIST}. Run: ./wasm/build.sh")
     if not os.path.exists(os.path.join(args.indices, "airports.bin")):
-        print(f"warning: {args.indices}/airports.bin not found yet; see README.md to export the index")
+        print(
+            f"warning: {args.indices}/airports.bin not found yet; see README.md to export the index"
+        )
 
     handler = functools.partial(Handler, indices=os.path.abspath(args.indices))
     print(f"Open http://localhost:{args.port}  (index files from {args.indices})")

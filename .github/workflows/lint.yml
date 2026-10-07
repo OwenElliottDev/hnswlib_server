@@ -21,8 +21,8 @@ jobs:
         run: uv sync --dev
 
       - name: Check C++ formatting (src/)
-        run: uv run clang-format --dry-run --Werror src/*.cpp src/*.hpp
-      
+        run: uv run clang-format --dry-run --Werror src/*.cpp src/*.hpp wasm/src/*.cpp wasm/src/*.hpp
+
       - name: Check Python code formatting (tests and examples)
         run: uv run ruff check
 
