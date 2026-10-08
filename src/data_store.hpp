@@ -1,10 +1,8 @@
 #ifndef DATA_STORE_HPP
 #define DATA_STORE_HPP
 
-#include <filesystem>
 #include <map>
 #include <mutex>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -43,6 +41,8 @@ private:
   template <typename T> void filterIN(DynamicBitset &result, const std::string &field, const std::vector<T> &values);
 
   void filterCONTAINS(DynamicBitset &result, const std::string &field, const FieldValue &value);
+
+  DynamicBitset filterUnlocked(const std::shared_ptr<FilterASTNode> &filters);
 
 public:
   KeyValueStore data;

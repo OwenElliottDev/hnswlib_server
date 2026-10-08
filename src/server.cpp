@@ -1,13 +1,13 @@
 #include "crow.h"
 #include "data_store.hpp"
 #include "filters.hpp"
-#include "hnswlib/hnswlib.h"
+#include "index_context.hpp"
 #include "index_utils.hpp"
 #include "models.hpp"
 #include "nlohmann/json.hpp"
 #include "wal.hpp"
+#include "wal_replay.hpp"
 #include <atomic>
-#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -16,101 +16,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
-
-#define DEFAULT_INDEX_SIZE 100000
-#define DEFAULT_INDEX_RESIZE_HEADROOM 10000
-#define INDEX_GROWTH_FACTOR 2.0
-
-struct UtcTime {
-  friend std::ostream &operator<<(std::ostream &os, const UtcTime &) {
-    std::time_t now = std::time(nullptr);
-    std::tm *utc = std::gmtime(&now);
-    return os << std::put_time(utc, "%Y-%m-%d %H:%M:%S UTC");
-  }
-};
-
-#define LOG(src) std::cerr << "[" << UtcTime{} << "][" << src << "] "
-
-// per-index guard to prevent concurrent addPoint with the same label
-struct InFlightGuard {
-  std::mutex mutex;
-  std::condition_variable cv;
-  std::unordered_set<int> ids;
-
-  void acquire(int id) {
-    std::unique_lock<std::mutex> lock(mutex);
-    cv.wait(lock, [&] { return ids.find(id) == ids.end(); });
-    ids.insert(id);
-  }
-
-  void release(int id) {
-    std::lock_guard<std::mutex> lock(mutex);
-    ids.erase(id);
-    cv.notify_all();
-  }
-};
-
-struct BufferedWrite {
-  int id;
-  std::vector<float> vector;
-  std::map<std::string, FieldValue> metadata;
-};
-
-struct ResolvedAdd {
-  uint32_t docId;
-  std::vector<float> vector;
-  std::map<std::string, FieldValue> metadata;
-};
-
-struct IndexContext {
-  hnswlib::HierarchicalNSW<float> *index = nullptr;
-  nlohmann::json settings;
-  DataStore *dataStore = nullptr;
-  WriteAheadLog *wal = nullptr;
-  InFlightGuard *inFlightGuard = nullptr;
-
-  // MRL (Matryoshka) state. When mrl is enabled the graph is scanned at
-  // mrlScanDim leading dimensions and candidates are reranked at full
-  // dimensionality with mrlFullDistFunc (owned by the index's MrlSpace).
-  bool isMrl = false;
-  int mrlScanDim = 0;
-  hnswlib::DISTFUNC<float> mrlFullDistFunc = nullptr;
-  void *mrlFullDistFuncParam = nullptr;
-
-  std::shared_mutex mutex; // per-index R/W lock
-  std::atomic<bool> resizing{false};
-  std::vector<BufferedWrite> writeBuffer;
-  std::mutex bufferMutex;
-  std::thread resizeThread;
-
-  // WAL replay state
-  std::atomic<bool> replayingWal{false};
-  std::atomic<size_t> walReplayedCount{0};
-  std::atomic<size_t> walReplayTotalAdds{0};
-  std::string walReplayError; // protected by bufferMutex
-  std::thread walReplayThread;
-  std::atomic<bool> walReplayCancelled{false};
-
-  ~IndexContext() {
-    // cancel and join WAL replay thread first
-    walReplayCancelled.store(true, std::memory_order_release);
-    if (walReplayThread.joinable()) {
-      walReplayThread.join();
-    }
-    if (resizeThread.joinable()) {
-      resizeThread.join();
-    }
-    if (wal) {
-      wal->stopFsyncThread();
-      delete wal;
-    }
-    delete inFlightGuard;
-    delete dataStore;
-    delete index;
-  }
-};
 
 std::unordered_map<std::string, std::shared_ptr<IndexContext>> contexts;
 std::shared_mutex contextMapMutex; // protects the map itself (create/delete/load/list)
@@ -125,45 +31,11 @@ std::shared_ptr<IndexContext> getContext(const std::string &indexName) {
   return it->second;
 }
 
-std::string wal_space_to_string(WalSpaceType spaceType) {
-  switch (spaceType) {
-  case WalSpaceType::L2:
-    return "L2";
-  case WalSpaceType::GEODEGREES:
-    return "GEODEGREES";
-  default:
-    return "IP";
-  }
-}
-
 std::string get_vector_type(const std::shared_ptr<IndexContext> &ctx) {
   if (ctx->settings.contains("vectorType")) {
     return ctx->settings["vectorType"].get<std::string>();
   }
   return "FLOAT32";
-}
-
-WalHeader makeWalHeader(const nlohmann::json &settings) {
-  WalHeader h;
-  h.dimension = settings.at("dimension").get<int32_t>();
-  h.M = settings.value("M", 16);
-  h.efConstruction = settings.value("efConstruction", 512);
-  std::string space = settings.value("spaceType", "IP");
-  if (space == "L2")
-    h.spaceType = WalSpaceType::L2;
-  else if (space == "GEODEGREES")
-    h.spaceType = WalSpaceType::GEODEGREES;
-  else
-    h.spaceType = WalSpaceType::IP;
-  h.mrlScanDim = settings.value("mrlScanDim", 0);
-  std::string vt = settings.value("vectorType", "FLOAT32");
-  if (vt == "FLOAT16")
-    h.vectorType = WalVectorType::FLOAT16;
-  else if (vt == "BFLOAT16")
-    h.vectorType = WalVectorType::BFLOAT16;
-  else
-    h.vectorType = WalVectorType::FLOAT32;
-  return h;
 }
 
 void remove_index_from_disk(const std::string &indexName) {
@@ -271,135 +143,6 @@ void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string 
   });
 }
 
-void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, std::vector<ResolvedAdd> adds, std::vector<uint32_t> deletes,
-                              const std::string &walPath) {
-  ctx->walReplayTotalAdds.store(adds.size(), std::memory_order_relaxed);
-  ctx->walReplayedCount.store(0, std::memory_order_relaxed);
-
-  ctx->walReplayThread = std::thread([ctx, indexName, adds = std::move(adds), deletes = std::move(deletes), walPath]() {
-    try {
-      std::string vectorType = ctx->settings.value("vectorType", "FLOAT32");
-
-      // pre-resize once to fit all adds. resizeIndex reallocates the graph
-      // arrays, which is NOT safe to run concurrently with searches (a search
-      // reading the old buffers mid-realloc can dereference freed memory and
-      // crash later when it traverses a stale link). Hold the exclusive lock so
-      // live search traffic during replay is briefly blocked across the resize;
-      // the concurrent addPoint phase below stays lock-free (hnswlib supports
-      // concurrent add + search once the index is sized).
-      size_t needed = ctx->index->cur_element_count + adds.size() + DEFAULT_INDEX_RESIZE_HEADROOM;
-      if (needed > ctx->index->max_elements_) {
-        size_t newMax = static_cast<size_t>(static_cast<float>(needed) * (1.0f + INDEX_GROWTH_FACTOR) + 1);
-        std::unique_lock<std::shared_mutex> resizeLock(ctx->mutex);
-        ctx->index->resizeIndex(static_cast<int>(newMax));
-      }
-
-      // progress reporter thread
-      std::atomic<bool> replayDone{false};
-      size_t totalAdds = adds.size();
-      std::thread progressThread;
-      if (totalAdds >= 1000) {
-        progressThread = std::thread([ctx, &replayDone, totalAdds, &indexName]() {
-          size_t lastReported = 0;
-          while (!replayDone.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            size_t current = ctx->walReplayedCount.load(std::memory_order_relaxed);
-            if (current > lastReported) {
-              int pct = static_cast<int>(current * 100 / totalAdds);
-              LOG("wal") << "index=" << indexName << " replay progress: " << current << "/" << totalAdds << " (" << pct << "%)"
-                         << std::endl;
-              lastReported = current;
-            }
-          }
-        });
-      }
-
-      unsigned numThreads = std::thread::hardware_concurrency();
-      if (numThreads == 0)
-        numThreads = 4;
-      if (numThreads > adds.size())
-        numThreads = static_cast<unsigned>(adds.size());
-
-      if (numThreads <= 1 || adds.size() < 100) {
-        for (const auto &ra : adds) {
-          if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
-            break;
-          addPointToIndex(ctx->index, vectorType, ra.docId, ra.vector);
-          ctx->dataStore->set(ra.docId, ra.metadata);
-          ctx->walReplayedCount.fetch_add(1, std::memory_order_relaxed);
-        }
-      } else {
-        std::vector<std::thread> threads;
-        threads.reserve(numThreads);
-        size_t chunkSize = (adds.size() + numThreads - 1) / numThreads;
-
-        for (unsigned t = 0; t < numThreads; t++) {
-          size_t start = t * chunkSize;
-          size_t end = std::min(start + chunkSize, adds.size());
-          if (start >= end)
-            break;
-          threads.emplace_back([ctx, &adds, &vectorType, start, end]() {
-            for (size_t i = start; i < end; i++) {
-              if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
-                break;
-              const auto &ra = adds[i];
-              addPointToIndex(ctx->index, vectorType, ra.docId, ra.vector);
-              ctx->dataStore->set(ra.docId, ra.metadata);
-              ctx->walReplayedCount.fetch_add(1, std::memory_order_relaxed);
-            }
-          });
-        }
-        for (auto &th : threads) {
-          th.join();
-        }
-      }
-
-      replayDone.store(true, std::memory_order_relaxed);
-      if (progressThread.joinable())
-        progressThread.join();
-
-      if (ctx->walReplayCancelled.load(std::memory_order_relaxed)) {
-        LOG("wal") << "index=" << indexName << " replay cancelled" << std::endl;
-        ctx->replayingWal.store(false, std::memory_order_release);
-        return;
-      }
-
-      // true deletion with graph repair; runs after all adds have joined. Holds
-      // the exclusive lock because removePoint rewires the graph and is not safe
-      // to run concurrently with live searches during replay.
-      if (!deletes.empty()) {
-        std::unique_lock<std::shared_mutex> delLock(ctx->mutex);
-        for (uint32_t docId : deletes) {
-          if (ctx->walReplayCancelled.load(std::memory_order_relaxed))
-            break;
-          try {
-            ctx->index->removePoint(docId);
-          } catch (...) {
-          }
-          ctx->dataStore->remove(docId);
-        }
-      }
-
-      LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size() << " deletes" << std::endl;
-
-      // create fresh WAL at same path
-      WalHeader wh = makeWalHeader(ctx->settings);
-      auto *wal = new WriteAheadLog(walPath, wh);
-      wal->startFsyncThread(walFsyncIntervalMs);
-      ctx->wal = wal;
-
-      ctx->replayingWal.store(false, std::memory_order_release);
-    } catch (const std::exception &e) {
-      LOG("ERROR") << "index=" << indexName << " WAL replay error: " << e.what() << std::endl;
-      {
-        std::lock_guard<std::mutex> bufLock(ctx->bufferMutex);
-        ctx->walReplayError = e.what();
-      }
-      ctx->replayingWal.store(false, std::memory_order_release);
-    }
-  });
-}
-
 int main() {
   const char *fsyncEnv = std::getenv("WAL_FSYNC_INTERVAL_MS");
   if (fsyncEnv) {
@@ -477,8 +220,7 @@ int main() {
     std::string indexName = data["indexName"];
 
     std::shared_ptr<IndexContext> ctx;
-    std::vector<ResolvedAdd> resolvedAdds;
-    std::vector<uint32_t> resolvedDeletes;
+    ResolvedWal resolved;
     std::string walPath = "indices/" + indexName + ".wal";
     bool hasWalEntries = false;
 
@@ -520,72 +262,13 @@ int main() {
           auto [walHeader, entries] = WriteAheadLog::readAll(walPath);
 
           if (!hasSnapshot) {
-            std::string spaceStr = wal_space_to_string(walHeader.spaceType);
-            std::string vtStr = "FLOAT32";
-            if (walHeader.vectorType == WalVectorType::FLOAT16)
-              vtStr = "FLOAT16";
-            else if (walHeader.vectorType == WalVectorType::BFLOAT16)
-              vtStr = "BFLOAT16";
-
-            BuiltSpace bs = build_space(spaceStr, vtStr, walHeader.dimension, walHeader.mrlScanDim);
-            auto *index =
-                new hnswlib::HierarchicalNSW<float>(bs.space, DEFAULT_INDEX_SIZE, walHeader.M, walHeader.efConstruction, 42, true);
-
-            ctx = std::make_shared<IndexContext>();
-            ctx->index = index;
-            ctx->isMrl = bs.isMrl;
-            ctx->mrlScanDim = walHeader.mrlScanDim;
-            ctx->mrlFullDistFunc = bs.fullDistFunc;
-            ctx->mrlFullDistFuncParam = bs.fullDistFuncParam;
-
-            nlohmann::json settings;
-            settings["indexName"] = indexName;
-            settings["dimension"] = walHeader.dimension;
-            settings["spaceType"] = spaceStr;
-            settings["vectorType"] = vtStr;
-            settings["efConstruction"] = walHeader.efConstruction;
-            settings["M"] = walHeader.M;
-            settings["mrlScanDim"] = walHeader.mrlScanDim;
-            ctx->settings = settings;
-            ctx->dataStore = new DataStore();
+            ctx = contextFromWalHeader(walHeader, indexName);
           }
 
           LOG("wal") << "index=" << indexName << " read " << entries.size() << " WAL entries" << std::endl;
 
-          // resolve final state per docId (last-writer-wins) into owned data
-          std::unordered_map<uint32_t, size_t> lastAddIndex; // docId -> index into resolvedAdds
-          std::unordered_set<uint32_t> deletedIds;
-
-          for (const auto &entry : entries) {
-            if (entry.opType == WalOpType::ADD) {
-              deletedIds.erase(entry.docId);
-              auto it = lastAddIndex.find(entry.docId);
-              if (it != lastAddIndex.end()) {
-                // update existing resolved add in place
-                resolvedAdds[it->second].vector = entry.vector;
-                resolvedAdds[it->second].metadata = entry.metadata;
-              } else {
-                lastAddIndex[entry.docId] = resolvedAdds.size();
-                resolvedAdds.push_back({entry.docId, entry.vector, entry.metadata});
-              }
-            } else if (entry.opType == WalOpType::DELETE) {
-              auto it = lastAddIndex.find(entry.docId);
-              if (it != lastAddIndex.end()) {
-                size_t idx = it->second;
-                if (idx != resolvedAdds.size() - 1) {
-                  uint32_t movedDocId = resolvedAdds.back().docId;
-                  resolvedAdds[idx] = std::move(resolvedAdds.back());
-                  lastAddIndex[movedDocId] = idx;
-                }
-                resolvedAdds.pop_back();
-                lastAddIndex.erase(it);
-              }
-              deletedIds.insert(entry.docId);
-            }
-          }
-
-          resolvedDeletes.assign(deletedIds.begin(), deletedIds.end());
-          hasWalEntries = !resolvedAdds.empty() || !resolvedDeletes.empty();
+          resolved = resolveWalEntries(entries);
+          hasWalEntries = !resolved.empty();
 
         } catch (const std::exception &e) {
           LOG("ERROR") << "WAL read error: " << e.what() << std::endl;
@@ -613,7 +296,7 @@ int main() {
     } // lock released
 
     if (hasWalEntries) {
-      startBackgroundWalReplay(ctx.get(), indexName, std::move(resolvedAdds), std::move(resolvedDeletes), walPath);
+      startBackgroundWalReplay(ctx.get(), indexName, std::move(resolved), walPath, walFsyncIntervalMs);
     }
 
     return crow::response(200, "Index loaded");
@@ -847,6 +530,67 @@ int main() {
     return crow::response(201, "Documents added");
   });
 
+  CROW_ROUTE(app, "/update_documents").methods(crow::HTTPMethod::PATCH)([](const crow::request &req) {
+    UpdateDocumentsRequest updReq;
+    try {
+      updReq = nlohmann::json::parse(req.body).get<UpdateDocumentsRequest>();
+    } catch (const std::exception &e) {
+      return crow::response(400, std::string("Invalid request: ") + e.what());
+    }
+
+    if (updReq.metadatas.size() != updReq.ids.size()) {
+      return crow::response(400, "Number of metadatas does not match number of IDs");
+    }
+
+    auto ctx = getContext(updReq.indexName);
+    if (!ctx) {
+      return crow::response(404, "Index not found");
+    }
+
+    if (ctx->replayingWal.load()) {
+      return crow::response(409, "Index is replaying WAL, try again later");
+    }
+
+    // Metadata-only, shared lock prevents deletes racing the check.
+    // Documents in the buffer are not in the index yet and will report 404.
+    nlohmann::json results = nlohmann::json::array();
+    bool anyErrors = false;
+    {
+      std::shared_lock<std::shared_mutex> lock(ctx->mutex);
+      for (size_t i = 0; i < updReq.ids.size(); i++) {
+        int id = updReq.ids[i];
+        InFlightLock idLock(*ctx->inFlightGuard, id);
+        if (!ctx->dataStore->contains(id)) {
+          results.push_back({{"id", id}, {"status", 404}, {"error", "Document not found"}});
+          anyErrors = true;
+          continue;
+        }
+        auto merged = ctx->dataStore->get(id);
+        for (const auto &[key, value] : updReq.metadatas[i]) {
+          if (value) {
+            merged[key] = *value;
+          } else {
+            merged.erase(key);
+          }
+        }
+        if (ctx->wal) {
+          ctx->wal->logUpdate(static_cast<uint32_t>(id), merged);
+        }
+        ctx->dataStore->set(id, std::move(merged));
+        results.push_back({{"id", id}, {"status", 200}});
+      }
+
+      if (ctx->wal && ctx->wal->hasDeletes() && ctx->wal->approxSize() > WAL_COMPACT_THRESHOLD) {
+        ctx->wal->tryCompact();
+      }
+    }
+
+    nlohmann::json response;
+    response["errors"] = anyErrors;
+    response["results"] = std::move(results);
+    return crow::response(200, response.dump());
+  });
+
   CROW_ROUTE(app, "/delete_documents").methods(crow::HTTPMethod::DELETE)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     DeleteDocumentsRequest deleteReq = data.get<DeleteDocumentsRequest>();
@@ -990,7 +734,6 @@ int main() {
     const void *queryData = to_storage_vector(get_vector_type(ctx), queryVec.data(), queryVec.size(), queryScratch);
 
     MrlParams mrl{ctx->isMrl, ctx->mrlFullDistFunc, ctx->mrlFullDistFuncParam};
-    // one extra so a full page survives dropping the input document
     size_t fetchK = static_cast<size_t>(similarReq.k) + similarReq.offset + (similarReq.excludeInputDocument ? 1 : 0);
     std::vector<int> ids;
     std::vector<float> distances;

@@ -228,6 +228,151 @@ TEST_F(WalTest, CompactionPreservesOrphanDelete) {
     EXPECT_EQ(entries[1].docId, 1u);
 }
 
+TEST_F(WalTest, UpdateEntryRoundtrip) {
+    WalHeader h = makeHeader(2);
+
+    {
+        WriteAheadLog wal(walPath(), h);
+        wal.logUpdate(9, {{"name", std::string("new")}, {"count", 3L}, {"tags", std::vector<std::string>{"a", "b"}}});
+    }
+
+    auto [_, entries] = WriteAheadLog::readAll(walPath());
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].opType, WalOpType::UPDATE);
+    EXPECT_EQ(entries[0].docId, 9u);
+    EXPECT_TRUE(entries[0].vector.empty());
+    EXPECT_EQ(std::get<std::string>(entries[0].metadata.at("name")), "new");
+    EXPECT_EQ(std::get<long>(entries[0].metadata.at("count")), 3L);
+    EXPECT_EQ(std::get<std::vector<std::string>>(entries[0].metadata.at("tags")), (std::vector<std::string>{"a", "b"}));
+}
+
+TEST_F(WalTest, CompactionFoldsUpdateIntoAdd) {
+    WalHeader h = makeHeader(2);
+
+    {
+        WriteAheadLog wal(walPath(), h);
+        wal.logAdd(1, {1.0f, 2.0f}, {{"v", 1L}});
+        wal.logUpdate(1, {{"v", 2L}});
+        wal.logUpdate(1, {{"v", 3L}});
+        wal.tryCompact();
+    }
+
+    auto [_, entries] = WriteAheadLog::readAll(walPath());
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].opType, WalOpType::ADD);
+    EXPECT_EQ(entries[0].vector, (std::vector<float>{1.0f, 2.0f}));
+    EXPECT_EQ(std::get<long>(entries[0].metadata.at("v")), 3L);
+}
+
+TEST_F(WalTest, CompactionKeepsLatestOrphanUpdate) {
+    WalHeader h = makeHeader(2);
+
+    {
+        WriteAheadLog wal(walPath(), h);
+        wal.logUpdate(5, {{"v", 1L}}); // no prior ADD — refers to snapshot baseline
+        wal.logAdd(1, {1.0f, 2.0f}, {});
+        wal.logUpdate(5, {{"v", 2L}});
+        wal.tryCompact();
+    }
+
+    auto [_, entries] = WriteAheadLog::readAll(walPath());
+    ASSERT_EQ(entries.size(), 2u);
+    EXPECT_EQ(entries[0].opType, WalOpType::ADD);
+    EXPECT_EQ(entries[0].docId, 1u);
+    EXPECT_EQ(entries[1].opType, WalOpType::UPDATE);
+    EXPECT_EQ(entries[1].docId, 5u);
+    EXPECT_EQ(std::get<long>(entries[1].metadata.at("v")), 2L);
+}
+
+TEST_F(WalTest, CompactionDropsUpdateForDeletedDoc) {
+    WalHeader h = makeHeader(2);
+
+    {
+        WriteAheadLog wal(walPath(), h);
+        wal.logUpdate(5, {{"v", 1L}});
+        wal.logDelete(5);
+        wal.tryCompact();
+    }
+
+    auto [_, entries] = WriteAheadLog::readAll(walPath());
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].opType, WalOpType::DELETE);
+    EXPECT_EQ(entries[0].docId, 5u);
+}
+
+TEST_F(WalTest, CompactionAddSupersedesOrphanUpdate) {
+    WalHeader h = makeHeader(2);
+
+    {
+        WriteAheadLog wal(walPath(), h);
+        wal.logUpdate(5, {{"v", 1L}});
+        wal.logAdd(5, {1.0f, 2.0f}, {{"v", 2L}});
+        wal.tryCompact();
+    }
+
+    auto [_, entries] = WriteAheadLog::readAll(walPath());
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].opType, WalOpType::ADD);
+    EXPECT_EQ(entries[0].docId, 5u);
+    EXPECT_EQ(std::get<long>(entries[0].metadata.at("v")), 2L);
+}
+
+static WalEntry walAdd(uint32_t id, float v, long meta) { return {WalOpType::ADD, id, {v}, {{"v", meta}}}; }
+static WalEntry walUpdate(uint32_t id, long meta) { return {WalOpType::UPDATE, id, {}, {{"v", meta}}}; }
+static WalEntry walDelete(uint32_t id) { return {WalOpType::DELETE, id, {}, {}}; }
+
+TEST(ResolveWalEntries, LastAddWins) {
+    auto r = resolveWalEntries({walAdd(1, 1.0f, 1), walAdd(1, 2.0f, 2)});
+    ASSERT_EQ(r.adds.size(), 1u);
+    EXPECT_EQ(r.adds[0].vector, (std::vector<float>{2.0f}));
+    EXPECT_EQ(std::get<long>(r.adds[0].metadata.at("v")), 2L);
+    EXPECT_TRUE(r.deletes.empty());
+    EXPECT_TRUE(r.updates.empty());
+}
+
+TEST(ResolveWalEntries, UpdateFoldsIntoAdd) {
+    auto r = resolveWalEntries({walAdd(1, 1.0f, 1), walUpdate(1, 2)});
+    ASSERT_EQ(r.adds.size(), 1u);
+    EXPECT_EQ(std::get<long>(r.adds[0].metadata.at("v")), 2L);
+    EXPECT_TRUE(r.updates.empty());
+}
+
+TEST(ResolveWalEntries, UpdateOfSnapshotDocKeepsLatest) {
+    auto r = resolveWalEntries({walUpdate(5, 1), walUpdate(5, 2)});
+    EXPECT_TRUE(r.adds.empty());
+    ASSERT_EQ(r.updates.size(), 1u);
+    EXPECT_EQ(std::get<long>(r.updates.at(5).at("v")), 2L);
+}
+
+TEST(ResolveWalEntries, DeleteDropsUpdate) {
+    auto r = resolveWalEntries({walUpdate(5, 1), walDelete(5)});
+    EXPECT_TRUE(r.updates.empty());
+    EXPECT_EQ(r.deletes, (std::vector<uint32_t>{5}));
+}
+
+TEST(ResolveWalEntries, AddSupersedesSnapshotUpdate) {
+    auto r = resolveWalEntries({walUpdate(5, 1), walAdd(5, 1.0f, 2)});
+    EXPECT_TRUE(r.updates.empty());
+    ASSERT_EQ(r.adds.size(), 1u);
+    EXPECT_EQ(std::get<long>(r.adds[0].metadata.at("v")), 2L);
+}
+
+TEST(ResolveWalEntries, DeleteCancelsAddAndReAddClearsDelete) {
+    auto deleted = resolveWalEntries({walAdd(1, 1.0f, 1), walAdd(2, 2.0f, 2), walDelete(1)});
+    ASSERT_EQ(deleted.adds.size(), 1u);
+    EXPECT_EQ(deleted.adds[0].docId, 2u);
+    EXPECT_EQ(deleted.deletes, (std::vector<uint32_t>{1}));
+
+    auto readded = resolveWalEntries({walAdd(1, 1.0f, 1), walDelete(1), walAdd(1, 3.0f, 3)});
+    ASSERT_EQ(readded.adds.size(), 1u);
+    EXPECT_EQ(readded.adds[0].vector, (std::vector<float>{3.0f}));
+    EXPECT_TRUE(readded.deletes.empty());
+}
+
+TEST(ResolveWalEntries, EmptyWal) {
+    EXPECT_TRUE(resolveWalEntries({}).empty());
+}
+
 TEST_F(WalTest, ConcurrentLogAddFromMultipleThreads) {
     WalHeader h = makeHeader(2);
     const int numThreads = 8;
