@@ -90,7 +90,6 @@ async function compareSearches(name, index, queries, extra = {}) {
   }
 }
 
-// pagination and /similar must agree with the server page for page
 async function comparePagination(name, index, queries, extra = {}) {
   for (const [qi, q] of queries.slice(0, 3).entries()) {
     for (const offset of [0, 7, 25]) {

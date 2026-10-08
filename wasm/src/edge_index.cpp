@@ -151,7 +151,6 @@ SearchResult EdgeIndex::searchStorage(const void *queryData, const SearchOptions
     throw std::invalid_argument("k must be positive");
   }
 
-  // one extra so a full page survives dropping the excluded document
   size_t fetchK = options.k + options.offset + (excludeId >= 0 ? 1 : 0);
   index_->setEf(std::max<size_t>(options.efSearch, options.k + options.offset));
 

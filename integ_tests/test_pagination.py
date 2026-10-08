@@ -5,8 +5,6 @@ from conftest import BASE_URL, create_index, delete_index
 INDEX_NAME = "pagination"
 N_DOCS = 50
 
-# Points on a line under L2: the nearest-neighbour order from the origin (or
-# from any document) is fully determined, so pages can be compared exactly.
 VECTORS = [[float(i), 0.0, 0.0, 0.0] for i in range(N_DOCS)]
 IDS = list(range(N_DOCS))
 METADATAS = [{"position": i, "parity": "even" if i % 2 == 0 else "odd"} for i in IDS]
@@ -47,9 +45,6 @@ def similar(**kwargs):
 def ok_json(res):
     assert res.status_code == 200, f"Request failed: {res.status_code} {res.text}"
     return res.json()
-
-
-# /search
 
 
 def test_search_offset_zero_matches_no_offset():
@@ -93,13 +88,11 @@ def test_search_offset_past_end_returns_empty():
 
 
 def test_search_offset_with_filter():
-    # only odd positions match: 1, 3, 5, ...
     page = ok_json(search(k=5, offset=5, filter='parity = "odd"'))
     assert page["hits"] == [11, 13, 15, 17, 19]
 
 
 def test_search_offset_past_filtered_results():
-    # 25 odd documents; a page starting at 20 has 5 left
     page = ok_json(search(k=10, offset=20, filter='parity = "odd"'))
     assert page["hits"] == [41, 43, 45, 47, 49]
 
@@ -111,7 +104,6 @@ def test_search_offset_metadata_aligned_with_hits():
 
 
 def test_search_offset_larger_than_ef_search():
-    # efSearch is raised to cover k + offset, so deep pages are still exact here
     page = ok_json(search(k=5, offset=40, efSearch=10))
     assert page["hits"] == list(range(40, 45))
 
@@ -119,9 +111,6 @@ def test_search_offset_larger_than_ef_search():
 def test_search_negative_offset_rejected():
     res = search(k=5, offset=-1)
     assert res.status_code == 400, res.text
-
-
-# /similar
 
 
 def test_similar_excludes_input_document_by_default():
@@ -147,7 +136,6 @@ def test_similar_pages_concatenate_to_full_result():
 
 
 def test_similar_partial_last_page_excludes_input_document():
-    # 49 other documents, so offset 45 leaves 4
     page = ok_json(similar(docId=0, k=10, offset=45))
     assert page["hits"] == [46, 47, 48, 49]
 
@@ -158,7 +146,6 @@ def test_similar_offset_past_end_returns_empty():
 
 
 def test_similar_offset_with_filter_and_metadata():
-    # from doc 20, even neighbours by distance: 22/18 (tie), 24/16, ...
     page = ok_json(
         similar(docId=20, k=4, offset=2, filter='parity = "even"', returnMetadata=True)
     )

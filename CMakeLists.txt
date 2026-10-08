@@ -6,6 +6,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_S
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # set build types
 if(NOT CMAKE_BUILD_TYPE)
@@ -29,7 +30,7 @@ else()
     message(WARNING "LTO is not supported by the current compiler.")
 endif()
 
-add_executable(server src/server.cpp src/data_store.cpp src/filters.cpp src/wal.cpp)
+add_executable(server src/server.cpp src/data_store.cpp src/filters.cpp src/wal.cpp src/wal_replay.cpp)
 target_compile_definitions(server PRIVATE HNSWLIB_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(server PRIVATE

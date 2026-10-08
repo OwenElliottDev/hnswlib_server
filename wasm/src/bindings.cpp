@@ -202,7 +202,6 @@ public:
     });
   }
 
-  // Same as search, with document `id`'s stored vector as the query.
   val similar(int id, int k, int offset, int efSearch, const std::string &filter, bool returnMetadata, int rerankSize,
               bool excludeInputDocument) {
     return guarded([&] {
