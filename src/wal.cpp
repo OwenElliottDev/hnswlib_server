@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_set>
 
 #ifdef __APPLE__
 #include <fcntl.h>
@@ -428,6 +429,51 @@ void WriteAheadLog::truncate() {
   std::fflush(file_);
   approxSize_.store(WAL_HEADER_SIZE, std::memory_order_relaxed);
   deleteCount_.store(0, std::memory_order_relaxed);
+}
+
+ResolvedWal resolveWalEntries(const std::vector<WalEntry> &entries) {
+  ResolvedWal resolved;
+  std::unordered_map<uint32_t, size_t> lastAddIndex; // docId -> index into resolved.adds
+  std::unordered_set<uint32_t> deletedIds;
+
+  for (const auto &entry : entries) {
+    if (entry.opType == WalOpType::ADD) {
+      deletedIds.erase(entry.docId);
+      resolved.updates.erase(entry.docId);
+      auto it = lastAddIndex.find(entry.docId);
+      if (it != lastAddIndex.end()) {
+        resolved.adds[it->second].vector = entry.vector;
+        resolved.adds[it->second].metadata = entry.metadata;
+      } else {
+        lastAddIndex[entry.docId] = resolved.adds.size();
+        resolved.adds.push_back({entry.docId, entry.vector, entry.metadata});
+      }
+    } else if (entry.opType == WalOpType::DELETE) {
+      auto it = lastAddIndex.find(entry.docId);
+      if (it != lastAddIndex.end()) {
+        size_t idx = it->second;
+        if (idx != resolved.adds.size() - 1) {
+          uint32_t movedDocId = resolved.adds.back().docId;
+          resolved.adds[idx] = std::move(resolved.adds.back());
+          lastAddIndex[movedDocId] = idx;
+        }
+        resolved.adds.pop_back();
+        lastAddIndex.erase(it);
+      }
+      deletedIds.insert(entry.docId);
+      resolved.updates.erase(entry.docId);
+    } else if (entry.opType == WalOpType::UPDATE) {
+      auto it = lastAddIndex.find(entry.docId);
+      if (it != lastAddIndex.end()) {
+        resolved.adds[it->second].metadata = entry.metadata;
+      } else {
+        resolved.updates[entry.docId] = entry.metadata;
+      }
+    }
+  }
+
+  resolved.deletes.assign(deletedIds.begin(), deletedIds.end());
+  return resolved;
 }
 
 bool WriteAheadLog::tryCompact() {

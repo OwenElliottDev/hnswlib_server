@@ -1,10 +1,8 @@
 #ifndef DATA_STORE_HPP
 #define DATA_STORE_HPP
 
-#include <filesystem>
 #include <map>
 #include <mutex>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>

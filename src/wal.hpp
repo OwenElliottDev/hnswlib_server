@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 static constexpr uint32_t WAL_MAGIC = 0x57414C31; // "WAL1"
@@ -60,6 +61,25 @@ struct WalEntry {
   std::vector<float> vector;                  // ADD only
   std::map<std::string, FieldValue> metadata; // ADD and UPDATE
 };
+
+struct ResolvedAdd {
+  uint32_t docId;
+  std::vector<float> vector;
+  std::map<std::string, FieldValue> metadata;
+};
+
+using ResolvedUpdates = std::unordered_map<uint32_t, std::map<std::string, FieldValue>>;
+
+struct ResolvedWal {
+  std::vector<ResolvedAdd> adds;
+  std::vector<uint32_t> deletes;
+  ResolvedUpdates updates;
+
+  bool empty() const { return adds.empty() && deletes.empty() && updates.empty(); }
+};
+
+// final state per docId (last writer wins); updates holds updates to snapshot documents
+ResolvedWal resolveWalEntries(const std::vector<WalEntry> &entries);
 
 uint32_t crc32(const uint8_t *data, size_t length);
 
