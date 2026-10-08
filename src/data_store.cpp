@@ -108,11 +108,18 @@ void DataStore::set(int id, std::map<std::string, FieldValue> record) {
   }
 }
 
-std::map<std::string, FieldValue> DataStore::get(int id) { return data.at(id); }
+std::map<std::string, FieldValue> DataStore::get(int id) {
+  std::lock_guard<std::mutex> lock(mutex);
+  return data.at(id);
+}
 
-bool DataStore::contains(int id) { return data.find(id) != data.end(); }
+bool DataStore::contains(int id) {
+  std::lock_guard<std::mutex> lock(mutex);
+  return data.find(id) != data.end();
+}
 
 std::vector<std::map<std::string, FieldValue>> DataStore::getMany(const std::vector<int> &ids) {
+  std::lock_guard<std::mutex> lock(mutex);
   std::vector<std::map<std::string, FieldValue>> result;
   for (int id : ids) {
     result.push_back(data.at(id));
@@ -287,6 +294,11 @@ void DataStore::filterCONTAINS(DynamicBitset &result, const std::string &field, 
 }
 
 DynamicBitset DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
+  std::lock_guard<std::mutex> lock(mutex);
+  return filterUnlocked(filters);
+}
+
+DynamicBitset DataStore::filterUnlocked(const std::shared_ptr<FilterASTNode> &filters) {
   if (filters == nullptr) {
     return DynamicBitset();
   }
@@ -316,8 +328,8 @@ DynamicBitset DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
     return result;
   }
   case NodeType::BooleanOp: {
-    auto left = filter(filters->left);
-    auto right = filter(filters->right);
+    auto left = filterUnlocked(filters->left);
+    auto right = filterUnlocked(filters->right);
 
     if (filters->booleanOp == BooleanOp::And) {
       left &= right;
@@ -327,7 +339,7 @@ DynamicBitset DataStore::filter(std::shared_ptr<FilterASTNode> filters) {
     return left;
   }
   case NodeType::Not: {
-    auto child = filter(filters->child);
+    auto child = filterUnlocked(filters->child);
     return allIds_.andNot(child);
   }
   }

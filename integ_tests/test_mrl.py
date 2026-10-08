@@ -107,8 +107,6 @@ def test_mrl_similar_reranks_with_full_stored_vector():
     name = _create_mrl("mrl_test_similar")
     _add_docs(name)
 
-    # doc 2 is identical to doc 1 on the scan prefix but doc 3 is closer at
-    # full dimension, so reranking only finds doc 3 if the full vector is used
     res = requests.post(
         f"{BASE_URL}/similar",
         json={"indexName": name, "docId": 1, "k": 1, "rerankSize": 3},

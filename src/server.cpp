@@ -52,6 +52,15 @@ struct InFlightGuard {
   }
 };
 
+struct InFlightLock {
+  InFlightGuard &guard;
+  int id;
+  InFlightLock(InFlightGuard &guard, int id) : guard(guard), id(id) { guard.acquire(id); }
+  ~InFlightLock() { guard.release(id); }
+  InFlightLock(const InFlightLock &) = delete;
+  InFlightLock &operator=(const InFlightLock &) = delete;
+};
+
 struct BufferedWrite {
   int id;
   std::vector<float> vector;
@@ -63,6 +72,8 @@ struct ResolvedAdd {
   std::vector<float> vector;
   std::map<std::string, FieldValue> metadata;
 };
+
+using ResolvedUpdates = std::unordered_map<uint32_t, std::map<std::string, FieldValue>>;
 
 struct IndexContext {
   hnswlib::HierarchicalNSW<float> *index = nullptr;
@@ -272,11 +283,11 @@ void startBackgroundResize(std::shared_ptr<IndexContext> ctx, const std::string 
 }
 
 void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, std::vector<ResolvedAdd> adds, std::vector<uint32_t> deletes,
-                              const std::string &walPath) {
+                              ResolvedUpdates updates, const std::string &walPath) {
   ctx->walReplayTotalAdds.store(adds.size(), std::memory_order_relaxed);
   ctx->walReplayedCount.store(0, std::memory_order_relaxed);
 
-  ctx->walReplayThread = std::thread([ctx, indexName, adds = std::move(adds), deletes = std::move(deletes), walPath]() {
+  auto replay = [ctx, indexName, adds = std::move(adds), deletes = std::move(deletes), updates = std::move(updates), walPath]() {
     try {
       std::string vectorType = ctx->settings.value("vectorType", "FLOAT32");
 
@@ -380,7 +391,14 @@ void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, s
         }
       }
 
-      LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size() << " deletes" << std::endl;
+      for (const auto &[docId, metadata] : updates) {
+        if (ctx->dataStore->contains(docId)) {
+          ctx->dataStore->set(docId, metadata);
+        }
+      }
+
+      LOG("wal") << "index=" << indexName << " replay complete, " << adds.size() << " adds, " << deletes.size() << " deletes, "
+                 << updates.size() << " updates" << std::endl;
 
       // create fresh WAL at same path
       WalHeader wh = makeWalHeader(ctx->settings);
@@ -397,7 +415,8 @@ void startBackgroundWalReplay(IndexContext *ctx, const std::string &indexName, s
       }
       ctx->replayingWal.store(false, std::memory_order_release);
     }
-  });
+  };
+  ctx->walReplayThread = std::thread(std::move(replay));
 }
 
 int main() {
@@ -479,6 +498,7 @@ int main() {
     std::shared_ptr<IndexContext> ctx;
     std::vector<ResolvedAdd> resolvedAdds;
     std::vector<uint32_t> resolvedDeletes;
+    ResolvedUpdates resolvedUpdates;
     std::string walPath = "indices/" + indexName + ".wal";
     bool hasWalEntries = false;
 
@@ -559,6 +579,7 @@ int main() {
           for (const auto &entry : entries) {
             if (entry.opType == WalOpType::ADD) {
               deletedIds.erase(entry.docId);
+              resolvedUpdates.erase(entry.docId);
               auto it = lastAddIndex.find(entry.docId);
               if (it != lastAddIndex.end()) {
                 // update existing resolved add in place
@@ -581,11 +602,19 @@ int main() {
                 lastAddIndex.erase(it);
               }
               deletedIds.insert(entry.docId);
+              resolvedUpdates.erase(entry.docId);
+            } else if (entry.opType == WalOpType::UPDATE) {
+              auto it = lastAddIndex.find(entry.docId);
+              if (it != lastAddIndex.end()) {
+                resolvedAdds[it->second].metadata = entry.metadata;
+              } else {
+                resolvedUpdates[entry.docId] = entry.metadata;
+              }
             }
           }
 
           resolvedDeletes.assign(deletedIds.begin(), deletedIds.end());
-          hasWalEntries = !resolvedAdds.empty() || !resolvedDeletes.empty();
+          hasWalEntries = !resolvedAdds.empty() || !resolvedDeletes.empty() || !resolvedUpdates.empty();
 
         } catch (const std::exception &e) {
           LOG("ERROR") << "WAL read error: " << e.what() << std::endl;
@@ -613,7 +642,8 @@ int main() {
     } // lock released
 
     if (hasWalEntries) {
-      startBackgroundWalReplay(ctx.get(), indexName, std::move(resolvedAdds), std::move(resolvedDeletes), walPath);
+      startBackgroundWalReplay(ctx.get(), indexName, std::move(resolvedAdds), std::move(resolvedDeletes), std::move(resolvedUpdates),
+                               walPath);
     }
 
     return crow::response(200, "Index loaded");
@@ -847,6 +877,67 @@ int main() {
     return crow::response(201, "Documents added");
   });
 
+  CROW_ROUTE(app, "/update_documents").methods(crow::HTTPMethod::PATCH)([](const crow::request &req) {
+    UpdateDocumentsRequest updReq;
+    try {
+      updReq = nlohmann::json::parse(req.body).get<UpdateDocumentsRequest>();
+    } catch (const std::exception &e) {
+      return crow::response(400, std::string("Invalid request: ") + e.what());
+    }
+
+    if (updReq.metadatas.size() != updReq.ids.size()) {
+      return crow::response(400, "Number of metadatas does not match number of IDs");
+    }
+
+    auto ctx = getContext(updReq.indexName);
+    if (!ctx) {
+      return crow::response(404, "Index not found");
+    }
+
+    if (ctx->replayingWal.load()) {
+      return crow::response(409, "Index is replaying WAL, try again later");
+    }
+
+    // Metadata-only, shared lock prevents deletes racing the check.
+    // Documents in the buffer are not in the index yet and will report 404.
+    nlohmann::json results = nlohmann::json::array();
+    bool anyErrors = false;
+    {
+      std::shared_lock<std::shared_mutex> lock(ctx->mutex);
+      for (size_t i = 0; i < updReq.ids.size(); i++) {
+        int id = updReq.ids[i];
+        InFlightLock idLock(*ctx->inFlightGuard, id);
+        if (!ctx->dataStore->contains(id)) {
+          results.push_back({{"id", id}, {"status", 404}, {"error", "Document not found"}});
+          anyErrors = true;
+          continue;
+        }
+        auto merged = ctx->dataStore->get(id);
+        for (const auto &[key, value] : updReq.metadatas[i]) {
+          if (value) {
+            merged[key] = *value;
+          } else {
+            merged.erase(key);
+          }
+        }
+        if (ctx->wal) {
+          ctx->wal->logUpdate(static_cast<uint32_t>(id), merged);
+        }
+        ctx->dataStore->set(id, std::move(merged));
+        results.push_back({{"id", id}, {"status", 200}});
+      }
+
+      if (ctx->wal && ctx->wal->hasDeletes() && ctx->wal->approxSize() > WAL_COMPACT_THRESHOLD) {
+        ctx->wal->tryCompact();
+      }
+    }
+
+    nlohmann::json response;
+    response["errors"] = anyErrors;
+    response["results"] = std::move(results);
+    return crow::response(200, response.dump());
+  });
+
   CROW_ROUTE(app, "/delete_documents").methods(crow::HTTPMethod::DELETE)([](const crow::request &req) {
     auto data = nlohmann::json::parse(req.body);
     DeleteDocumentsRequest deleteReq = data.get<DeleteDocumentsRequest>();
@@ -990,7 +1081,6 @@ int main() {
     const void *queryData = to_storage_vector(get_vector_type(ctx), queryVec.data(), queryVec.size(), queryScratch);
 
     MrlParams mrl{ctx->isMrl, ctx->mrlFullDistFunc, ctx->mrlFullDistFuncParam};
-    // one extra so a full page survives dropping the input document
     size_t fetchK = static_cast<size_t>(similarReq.k) + similarReq.offset + (similarReq.excludeInputDocument ? 1 : 0);
     std::vector<int> ids;
     std::vector<float> distances;

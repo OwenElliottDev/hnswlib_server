@@ -16,7 +16,7 @@ static constexpr uint32_t WAL_VERSION = 1;
 static constexpr size_t WAL_HEADER_SIZE = 256;
 static constexpr size_t WAL_COMPACT_THRESHOLD = 64 * 1024 * 1024; // 64MB
 
-enum class WalOpType : uint8_t { ADD = 0x01, DELETE = 0x02 };
+enum class WalOpType : uint8_t { ADD = 0x01, DELETE = 0x02, UPDATE = 0x03 };
 
 enum class WalSpaceType : uint8_t { L2 = 0, IP = 1, GEODEGREES = 2 };
 
@@ -39,6 +39,9 @@ enum class WalVectorType : uint8_t { FLOAT32 = 0, FLOAT16 = 1, BFLOAT16 = 2 };
 //
 // DELETE payload (opType=0x02):
 //   [opType:1] [docId:4]
+//
+// UPDATE payload (opType=0x03):
+//   [opType:1] [docId:4] [metaCount:4] [for each: keyLen:4, key:bytes, variantIdx:4, value:...]
 
 struct WalHeader {
   uint32_t magic = WAL_MAGIC;
@@ -55,7 +58,7 @@ struct WalEntry {
   WalOpType opType;
   uint32_t docId;
   std::vector<float> vector;                  // ADD only
-  std::map<std::string, FieldValue> metadata; // ADD only
+  std::map<std::string, FieldValue> metadata; // ADD and UPDATE
 };
 
 uint32_t crc32(const uint8_t *data, size_t length);
@@ -66,6 +69,7 @@ public:
   ~WriteAheadLog();
 
   void logAdd(uint32_t docId, const std::vector<float> &vector, const std::map<std::string, FieldValue> &metadata);
+  void logUpdate(uint32_t docId, const std::map<std::string, FieldValue> &metadata);
   void logDelete(uint32_t docId);
 
   static std::pair<WalHeader, std::vector<WalEntry>> readAll(const std::string &path);
@@ -83,6 +87,7 @@ private:
   static WalHeader readHeader(FILE *f);
   static std::vector<uint8_t> serializeAddPayload(uint32_t docId, const std::vector<float> &vector,
                                                   const std::map<std::string, FieldValue> &metadata);
+  static std::vector<uint8_t> serializeUpdatePayload(uint32_t docId, const std::map<std::string, FieldValue> &metadata);
   static std::vector<uint8_t> serializeDeletePayload(uint32_t docId);
   void appendEntry(const std::vector<uint8_t> &payload);
 

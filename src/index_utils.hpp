@@ -128,9 +128,7 @@ inline void addPointToIndex(hnswlib::HierarchicalNSW<float> *index, const std::s
   addPointToIndex(index, vectorType, id, vec.data(), vec.size());
 }
 
-// Copies a stored vector out by label. hnswlib's getDataByLabel sizes the copy
-// from the distance function's dimension, which for MRL indexes is mrlScanDim,
-// so this uses the full stored size instead.
+// hnswlib's getDataByLabel only copies mrlScanDim values for MRL indexes
 template <typename T> std::vector<T> getStoredVector(hnswlib::HierarchicalNSW<float> *index, int id) {
   std::unique_lock<std::mutex> lockLabel(index->getLabelOpMutex(id));
   std::unique_lock<std::mutex> lockTable(index->label_lookup_lock);
@@ -206,9 +204,6 @@ inline std::pair<std::vector<int>, std::vector<float>> knn_search(hnswlib::Hiera
   return {std::move(ids), std::move(distances)};
 }
 
-// Applies pagination to knn_search results in place: removes `excludeId` (when
-// non-negative), skips the first `offset` hits, then keeps at most `k`. Callers
-// should search for k + offset (+ 1 when excluding) so a full page survives.
 inline void paginate_results(std::vector<int> &ids, std::vector<float> &distances, size_t offset, size_t k, int excludeId = -1) {
   if (excludeId >= 0) {
     auto it = std::find(ids.begin(), ids.end(), excludeId);
