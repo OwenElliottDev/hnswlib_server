@@ -121,7 +121,7 @@ If `rerankSize` is `0` (or omitted), results are ranked using only the `mrlScanD
 
 ### Write-Ahead Logging (WAL)
 
-All add and delete operations are logged to a write-ahead log for durability. When an index is loaded from disk, the WAL is replayed to recover any operations that occurred after the last save. The WAL automatically compacts when it exceeds 64MB.
+All add, update and delete operations are logged to a write-ahead log for durability. When an index is loaded from disk, the WAL is replayed to recover any operations that occurred after the last save. The WAL automatically compacts when it exceeds 64MB.
 
 The fsync interval can be configured via the `WAL_FSYNC_INTERVAL_MS` environment variable (default: 1000ms).
 
@@ -282,6 +282,27 @@ Adds documents to the index.
 ### Response
 
 - `201 Created`: Documents added successfully.
+
+## `PATCH /update_documents`
+
+Partially updates the metadata of existing documents; vectors are unchanged. Each entry in `metadatas` is merged into the matching document's metadata: fields with a value are set, fields set to `null` are removed, and fields not mentioned are kept. Each document is reported separately, so missing IDs don't stop the rest of the request.
+
+### Request
+
+```json
+{
+    "indexName": "test_index",
+    "ids": [0, 1, 7],
+    "metadatas": [{"name": "doc_0_renamed"}, {"category": "cool", "some_number": null}, {"name": "doc_7"}]
+}
+```
+
+### Response
+
+- `200 OK`: Returns JSON with `errors` (`true` if any document failed) and `results`, one entry per ID with `id`, `status` (`200` or `404`), and `error` for failures, e.g. `{"errors": true, "results": [{"id": 0, "status": 200}, {"id": 1, "status": 200}, {"id": 7, "status": 404, "error": "Document not found"}]}`.
+- `400 Bad Request`: Malformed request, unsupported metadata value, or `metadatas` doesn't have one entry per ID.
+- `404 Not Found`: Index not found.
+- `409 Conflict`: Index is replaying its WAL, try again later.
 
 ## `POST /search`
 
