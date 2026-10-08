@@ -1,6 +1,5 @@
 #include "filters.hpp"
 #include <regex>
-#include <sstream>
 
 const std::regex LPAREN(R"(\()");
 const std::regex RPAREN(R"(\))");

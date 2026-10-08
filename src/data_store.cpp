@@ -4,9 +4,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
-#include <set>
 #include <type_traits>
-#include <typeindex>
 
 bool VariantComparator::operator()(const FieldValue &lhs, const FieldValue &rhs) const { return lhs < rhs; }
 
