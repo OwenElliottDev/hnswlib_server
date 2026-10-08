@@ -44,6 +44,8 @@ private:
 
   void filterCONTAINS(DynamicBitset &result, const std::string &field, const FieldValue &value);
 
+  DynamicBitset filterUnlocked(const std::shared_ptr<FilterASTNode> &filters);
+
 public:
   KeyValueStore data;
 

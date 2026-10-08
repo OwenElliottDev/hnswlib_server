@@ -17,7 +17,7 @@ using Metadata = std::map<std::string, FieldValue>;
 
 struct SearchOptions {
   size_t k = 10;
-  size_t offset = 0; // skip this many nearest hits (pagination)
+  size_t offset = 0;
   int efSearch = 512;
   std::string filter;
   bool returnMetadata = false;
@@ -55,8 +55,6 @@ public:
   void addDocuments(const std::vector<int> &ids, const float *vectors, size_t n, const std::vector<Metadata> &metadatas);
   void deleteDocuments(const std::vector<int> &ids);
   SearchResult search(const float *query, size_t queryDim, const SearchOptions &options);
-  // Searches with the stored vector of document `id` as the query, like the
-  // server's /similar. `id` itself is dropped from the results when excludeInput is set.
   SearchResult similar(int id, const SearchOptions &options, bool excludeInput = true);
 
   bool contains(int id);

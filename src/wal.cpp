@@ -173,6 +173,28 @@ static FieldValue deserializeFieldValueFromWal(const uint8_t *data, size_t &off)
   }
 }
 
+static void pushMetadata(std::vector<uint8_t> &buf, const std::map<std::string, FieldValue> &metadata) {
+  pushU32(buf, static_cast<uint32_t>(metadata.size()));
+  for (const auto &[key, value] : metadata) {
+    uint32_t keyLen = static_cast<uint32_t>(key.size());
+    pushU32(buf, keyLen);
+    pushBytes(buf, key.data(), keyLen);
+    serializeFieldValueToWal(buf, value);
+  }
+}
+
+static std::map<std::string, FieldValue> readMetadata(const uint8_t *data, size_t &off) {
+  std::map<std::string, FieldValue> metadata;
+  uint32_t metaCount = readU32(data, off);
+  for (uint32_t m = 0; m < metaCount; m++) {
+    uint32_t keyLen = readU32(data, off);
+    std::string key(reinterpret_cast<const char *>(data + off), keyLen);
+    off += keyLen;
+    metadata[key] = deserializeFieldValueFromWal(data, off);
+  }
+  return metadata;
+}
+
 WriteAheadLog::WriteAheadLog(const std::string &path, const WalHeader &header) : path_(path), header_(header) {
   auto parent = std::filesystem::path(path).parent_path();
   if (!parent.empty()) {
@@ -267,14 +289,16 @@ std::vector<uint8_t> WriteAheadLog::serializeAddPayload(uint32_t docId, const st
   pushU32(payload, vectorSize);
   pushBytes(payload, vector.data(), vectorSize);
 
-  uint32_t metaCount = static_cast<uint32_t>(metadata.size());
-  pushU32(payload, metaCount);
-  for (const auto &[key, value] : metadata) {
-    uint32_t keyLen = static_cast<uint32_t>(key.size());
-    pushU32(payload, keyLen);
-    pushBytes(payload, key.data(), keyLen);
-    serializeFieldValueToWal(payload, value);
-  }
+  pushMetadata(payload, metadata);
+  return payload;
+}
+
+std::vector<uint8_t> WriteAheadLog::serializeUpdatePayload(uint32_t docId, const std::map<std::string, FieldValue> &metadata) {
+  std::vector<uint8_t> payload;
+  pushU8(payload, static_cast<uint8_t>(WalOpType::UPDATE));
+  pushU32(payload, docId);
+
+  pushMetadata(payload, metadata);
   return payload;
 }
 
@@ -301,6 +325,11 @@ void WriteAheadLog::appendEntry(const std::vector<uint8_t> &payload) {
 
 void WriteAheadLog::logAdd(uint32_t docId, const std::vector<float> &vector, const std::map<std::string, FieldValue> &metadata) {
   auto payload = serializeAddPayload(docId, vector, metadata);
+  appendEntry(payload);
+}
+
+void WriteAheadLog::logUpdate(uint32_t docId, const std::map<std::string, FieldValue> &metadata) {
+  auto payload = serializeUpdatePayload(docId, metadata);
   appendEntry(payload);
 }
 
@@ -367,14 +396,13 @@ std::pair<WalHeader, std::vector<WalEntry>> WriteAheadLog::readAll(const std::st
       std::memcpy(entry.vector.data(), payload.data() + off, vectorSize);
       off += vectorSize;
 
-      uint32_t metaCount = readU32(payload.data(), off);
-      for (uint32_t m = 0; m < metaCount; m++) {
-        uint32_t keyLen = readU32(payload.data(), off);
-        std::string key(reinterpret_cast<const char *>(payload.data() + off), keyLen);
-        off += keyLen;
-        FieldValue value = deserializeFieldValueFromWal(payload.data(), off);
-        entry.metadata[key] = value;
-      }
+      entry.metadata = readMetadata(payload.data(), off);
+      entries.push_back(std::move(entry));
+    } else if (op == WalOpType::UPDATE) {
+      WalEntry entry;
+      entry.opType = WalOpType::UPDATE;
+      entry.docId = readU32(payload.data(), off);
+      entry.metadata = readMetadata(payload.data(), off);
       entries.push_back(std::move(entry));
     } else if (op == WalOpType::DELETE) {
       WalEntry entry;
@@ -419,18 +447,39 @@ bool WriteAheadLog::tryCompact() {
 
   auto [header, entries] = readAll(path_);
 
-  // walk in order: ADD → store in map; DELETE → if in map, cancel both; else keep DELETE
-  std::map<uint32_t, size_t> addIndex; // docId → index in survivors
+  // walk in order: ADD → store in map; UPDATE → fold into ADD, else keep latest; DELETE → if in map, cancel both; else keep DELETE
+  const auto removed = static_cast<WalOpType>(0xFF); // sentinel for removal
+  std::map<uint32_t, size_t> addIndex;               // docId → index in survivors
+  std::map<uint32_t, size_t> updateIndex;
   std::vector<WalEntry> survivors;
+
+  auto dropUpdate = [&](uint32_t docId) {
+    auto it = updateIndex.find(docId);
+    if (it != updateIndex.end()) {
+      survivors[it->second].opType = removed;
+      updateIndex.erase(it);
+    }
+  };
 
   for (auto &entry : entries) {
     if (entry.opType == WalOpType::ADD) {
+      dropUpdate(entry.docId);
       addIndex[entry.docId] = survivors.size();
       survivors.push_back(std::move(entry));
-    } else if (entry.opType == WalOpType::DELETE) {
+    } else if (entry.opType == WalOpType::UPDATE) {
       auto it = addIndex.find(entry.docId);
       if (it != addIndex.end()) {
-        survivors[it->second].opType = static_cast<WalOpType>(0xFF); // sentinel for removal
+        survivors[it->second].metadata = std::move(entry.metadata);
+      } else {
+        dropUpdate(entry.docId);
+        updateIndex[entry.docId] = survivors.size();
+        survivors.push_back(std::move(entry));
+      }
+    } else if (entry.opType == WalOpType::DELETE) {
+      dropUpdate(entry.docId);
+      auto it = addIndex.find(entry.docId);
+      if (it != addIndex.end()) {
+        survivors[it->second].opType = removed;
         addIndex.erase(it);
       } else {
         // delete refers to snapshot baseline, keep it
@@ -439,9 +488,8 @@ bool WriteAheadLog::tryCompact() {
     }
   }
 
-  survivors.erase(
-      std::remove_if(survivors.begin(), survivors.end(), [](const WalEntry &e) { return static_cast<uint8_t>(e.opType) == 0xFF; }),
-      survivors.end());
+  survivors.erase(std::remove_if(survivors.begin(), survivors.end(), [&](const WalEntry &e) { return e.opType == removed; }),
+                  survivors.end());
 
   std::string compactPath = path_ + ".compact";
   FILE *cf = std::fopen(compactPath.c_str(), "wb");
@@ -457,6 +505,8 @@ bool WriteAheadLog::tryCompact() {
     std::vector<uint8_t> payload;
     if (entry.opType == WalOpType::ADD) {
       payload = serializeAddPayload(entry.docId, entry.vector, entry.metadata);
+    } else if (entry.opType == WalOpType::UPDATE) {
+      payload = serializeUpdatePayload(entry.docId, entry.metadata);
     } else {
       payload = serializeDeletePayload(entry.docId);
     }

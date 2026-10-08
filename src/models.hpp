@@ -3,25 +3,25 @@
 
 #include "data_store.hpp"
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
 struct IndexRequest {
   std::string indexName;
   int dimension;
-  std::string indexType = "APPROXIMATE"; // default is approximate index
-  std::string spaceType = "IP";          // default is Inner Product space
-  std::string vectorType = "FLOAT32";    // "FLOAT32", "FLOAT16", or "BFLOAT16"
-  int efConstruction = 512;              // default value for efConstruction
-  int M = 16;                            // default value for M
-  int mrlScanDim = 0;                    // Matryoshka (MRL): build/scan the graph at this many leading
-                                         // dimensions while storing full vectors. 0 disables MRL.
+  std::string indexType = "APPROXIMATE";
+  std::string spaceType = "IP";
+  std::string vectorType = "FLOAT32"; // "FLOAT32", "FLOAT16", or "BFLOAT16"
+  int efConstruction = 512;
+  int M = 16;
+  int mrlScanDim = 0; // Matryoshka (MRL): build/scan the graph at this many leading
+                      // dimensions while storing full vectors. 0 disables MRL.
 };
 
 inline void from_json(const nlohmann::json &j, IndexRequest &req) {
   j.at("indexName").get_to(req.indexName);
   j.at("dimension").get_to(req.dimension);
-  // Defaults
   req.indexType = j.value("indexType", req.indexType);
   req.spaceType = j.value("spaceType", req.spaceType);
   req.vectorType = j.value("vectorType", req.vectorType);
@@ -30,39 +30,7 @@ inline void from_json(const nlohmann::json &j, IndexRequest &req) {
   req.mrlScanDim = j.value("mrlScanDim", req.mrlScanDim);
 }
 
-struct AddDocumentsRequest {
-  std::string indexName;
-  std::vector<int> ids;
-  std::vector<std::vector<float>> vectors;
-  std::vector<std::map<std::string, FieldValue>> metadatas = {}; // default is empty metadata
-};
-
-inline void to_json(nlohmann::json &j, const AddDocumentsRequest &req) {
-  j["indexName"] = req.indexName;
-  j["ids"] = req.ids;
-  j["vectors"] = req.vectors;
-
-  // Convert metadatas manually
-  j["metadatas"] = nlohmann::json::array();
-  for (const auto &metadata_map : req.metadatas) {
-    nlohmann::json json_metadata_map;
-    for (const auto &[key, value] : metadata_map) {
-      // Visit the variant to assign the appropriate type to JSON
-      std::visit([&json_metadata_map, &key](auto &&arg) { json_metadata_map[key] = arg; }, value);
-    }
-    j["metadatas"].push_back(json_metadata_map);
-  }
-}
-
-inline void from_json(const nlohmann::json &j, AddDocumentsRequest &req) {
-  j.at("indexName").get_to(req.indexName);
-  j.at("ids").get_to(req.ids);
-  j.at("vectors").get_to(req.vectors);
-
-  // Convert metadatas manually
-  if (!j.contains("metadatas")) {
-    return; // No metadata provided
-  }
+inline void metadatas_from_json(const nlohmann::json &j, std::vector<std::map<std::string, FieldValue>> &metadatas) {
   for (const auto &json_metadata_map : j.at("metadatas")) {
     std::map<std::string, FieldValue> metadata_map;
     for (const auto &[key, json_value] : json_metadata_map.items()) {
@@ -99,7 +67,78 @@ inline void from_json(const nlohmann::json &j, AddDocumentsRequest &req) {
 
       metadata_map[key] = field_value;
     }
-    req.metadatas.push_back(metadata_map);
+    metadatas.push_back(metadata_map);
+  }
+}
+
+struct AddDocumentsRequest {
+  std::string indexName;
+  std::vector<int> ids;
+  std::vector<std::vector<float>> vectors;
+  std::vector<std::map<std::string, FieldValue>> metadatas = {};
+};
+
+inline void to_json(nlohmann::json &j, const AddDocumentsRequest &req) {
+  j["indexName"] = req.indexName;
+  j["ids"] = req.ids;
+  j["vectors"] = req.vectors;
+
+  j["metadatas"] = nlohmann::json::array();
+  for (const auto &metadata_map : req.metadatas) {
+    nlohmann::json json_metadata_map;
+    for (const auto &[key, value] : metadata_map) {
+      std::visit([&json_metadata_map, &key](auto &&arg) { json_metadata_map[key] = arg; }, value);
+    }
+    j["metadatas"].push_back(json_metadata_map);
+  }
+}
+
+inline void from_json(const nlohmann::json &j, AddDocumentsRequest &req) {
+  j.at("indexName").get_to(req.indexName);
+  j.at("ids").get_to(req.ids);
+  j.at("vectors").get_to(req.vectors);
+
+  if (!j.contains("metadatas")) {
+    return;
+  }
+  metadatas_from_json(j, req.metadatas);
+}
+
+struct UpdateDocumentsRequest {
+  std::string indexName;
+  std::vector<int> ids;
+  std::vector<std::map<std::string, std::optional<FieldValue>>> metadatas;
+};
+
+inline void from_json(const nlohmann::json &j, UpdateDocumentsRequest &req) {
+  j.at("indexName").get_to(req.indexName);
+  j.at("ids").get_to(req.ids);
+
+  nlohmann::json toSet = {{"metadatas", nlohmann::json::array()}};
+  for (const auto &patch : j.at("metadatas")) {
+    if (!patch.is_object()) {
+      throw std::invalid_argument("Each metadatas entry must be an object");
+    }
+    nlohmann::json fields = nlohmann::json::object();
+    for (const auto &[key, value] : patch.items()) {
+      if (!value.is_null()) {
+        fields[key] = value;
+      }
+    }
+    toSet["metadatas"].push_back(std::move(fields));
+  }
+  std::vector<std::map<std::string, FieldValue>> parsed;
+  metadatas_from_json(toSet, parsed);
+
+  const auto &patches = j.at("metadatas");
+  for (size_t i = 0; i < parsed.size(); i++) {
+    std::map<std::string, std::optional<FieldValue>> patch(parsed[i].begin(), parsed[i].end());
+    for (const auto &[key, value] : patches[i].items()) {
+      if (value.is_null()) {
+        patch[key] = std::nullopt;
+      }
+    }
+    req.metadatas.push_back(std::move(patch));
   }
 }
 
@@ -148,19 +187,18 @@ struct SearchRequest {
   std::string indexName;
   std::vector<float> queryVector;
   int k;
-  int offset = 0;              // offset, used for pagination
-  int efSearch = 512;          // default value
-  std::string filter = "";     // filter string, default is empty (no filter)
-  bool returnMetadata = false; // whether to return metadata or not, default is false
-  int rerankSize = 0;          // MRL only: rerank the best rerankSize scan-dim candidates at full
-                               // dimensionality and return the top k. 0 means no reranking.
+  int offset = 0;
+  int efSearch = 512;
+  std::string filter = "";
+  bool returnMetadata = false;
+  int rerankSize = 0; // MRL only: rerank the best rerankSize scan-dim candidates at full
+                      // dimensionality and return the top k. 0 means no reranking.
 };
 
 inline void from_json(const nlohmann::json &j, SearchRequest &req) {
   j.at("indexName").get_to(req.indexName);
   j.at("queryVector").get_to(req.queryVector);
   j.at("k").get_to(req.k);
-  // defaults
   req.offset = j.value("offset", req.offset);
   req.efSearch = j.value("efSearch", req.efSearch);
   req.filter = j.value("filter", req.filter);
@@ -172,20 +210,19 @@ struct SimilarRequest {
   std::string indexName;
   int docId;
   int k;
-  int offset = 0;                   // offset, used for pagination
-  bool excludeInputDocument = true; // determines if we should filter out the source document
-  int efSearch = 512;               // default value
-  std::string filter = "";          // filter string, default is empty (no filter)
-  bool returnMetadata = false;      // whether to return metadata or not, default is false
-  int rerankSize = 0;               // MRL only: rerank the best rerankSize scan-dim candidates at full
-                                    // dimensionality and return the top k. 0 means no reranking.
+  int offset = 0;
+  bool excludeInputDocument = true;
+  int efSearch = 512;
+  std::string filter = "";
+  bool returnMetadata = false;
+  int rerankSize = 0; // MRL only: rerank the best rerankSize scan-dim candidates at full
+                      // dimensionality and return the top k. 0 means no reranking.
 };
 
 inline void from_json(const nlohmann::json &j, SimilarRequest &req) {
   j.at("indexName").get_to(req.indexName);
   j.at("docId").get_to(req.docId);
   j.at("k").get_to(req.k);
-  // defaults
   req.offset = j.value("offset", req.offset);
   req.excludeInputDocument = j.value("excludeInputDocument", req.excludeInputDocument);
   req.efSearch = j.value("efSearch", req.efSearch);

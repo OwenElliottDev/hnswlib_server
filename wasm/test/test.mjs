@@ -281,7 +281,6 @@ test('empty index searches return no hits', async () => {
   loaded.dispose();
 });
 
-// points on a line under L2, so neighbour order is fully determined
 async function lineIndex(n = 50) {
   const index = await VectorIndex.create({ dimension: 4, spaceType: 'L2' });
   const lineIds = Array.from({ length: n }, (_, i) => i);
